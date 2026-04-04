@@ -1,0 +1,26 @@
+import { z } from "zod";
+
+const configSchema = z.object({
+  DISCORD_TOKEN: z.string().min(1),
+  DISCORD_APPLICATION_ID: z.string().min(1),
+  DISCORD_GUILD_ID: z.string().min(1).optional(),
+  DATABASE_URL: z.string().url(),
+  WIKI_BASE_URL: z.string().url().default("https://wiki.hytalemodding.dev"),
+  WIKI_REFRESH_CRON: z.string().default("0 3 * * *"),
+  LOOKUP_STALE_HOURS: z.coerce.number().int().positive().default(24),
+  LOOKUP_SIMILARITY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.58),
+  BUTTON_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  RATE_LIMIT_USER_MAX: z.coerce.number().int().positive().default(6),
+  RATE_LIMIT_USER_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_GUILD_MAX: z.coerce.number().int().positive().default(40),
+  RATE_LIMIT_GUILD_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_AUTOCOMPLETE_MAX: z.coerce.number().int().positive().default(20),
+  RATE_LIMIT_AUTOCOMPLETE_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),
+  LOG_LEVEL: z.string().default("info")
+});
+
+export type AppConfig = z.infer<typeof configSchema>;
+
+export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
+  return configSchema.parse(env);
+}
