@@ -147,10 +147,10 @@ To test features before shipping to `main`, run a second bot instance:
 3. Invite the test bot to your test server.
 4. Set a different Postgres host port in the dev `.env` so prod/dev can run side-by-side on one VPS, for example:
    - `POSTGRES_BIND_PORT=5433`
-5. Keep the container DB URL as:
-   - `DATABASE_URL=postgres://postgres:postgres@localhost:5432/hytale_mod_wiki_bot` (host-side scripts)
-   - Compose already injects container-side `DATABASE_URL` to use the internal `postgres` service.
-6. Push to `dev` (or run the dev workflow manually) to publish staging.
+5. If you run host-side Node scripts in the dev checkout, match that port in `DATABASE_URL`, for example:
+   - `DATABASE_URL=postgres://postgres:postgres@localhost:5433/hytale_mod_wiki_bot`
+6. Compose already injects a container-side `DATABASE_URL` for the bot service using the internal `postgres` service.
+7. Push to `dev` (or run the dev workflow manually) to publish staging.
 
 ## Testing
 
