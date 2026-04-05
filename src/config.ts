@@ -26,7 +26,6 @@ const optionalNonEmptyString = z.preprocess((value) => {
 const configSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_APPLICATION_ID: z.string().min(1),
-  DISCORD_GUILD_ID: z.string().min(1).optional(),
   DATABASE_URL: z.string().url(),
   WIKI_BASE_URL: z.string().url().default("https://wiki.hytalemodding.dev"),
   WIKI_API_KEY: optionalNonEmptyString,
@@ -42,6 +41,15 @@ const configSchema = z.object({
   RATE_LIMIT_GUILD_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_AUTOCOMPLETE_MAX: z.coerce.number().int().positive().default(20),
   RATE_LIMIT_AUTOCOMPLETE_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),
+  CRASH_RELAY_ENABLED: booleanFromEnv.default(false),
+  CRASH_RELAY_BIND_HOST: z.string().default("0.0.0.0"),
+  CRASH_RELAY_PORT: z.coerce.number().int().min(1).max(65535).default(8787),
+  CRASH_RELAY_PATH: z.string().default("/tamework/crash-report"),
+  CRASH_RELAY_AUTH_TOKEN: optionalNonEmptyString,
+  CRASH_RELAY_DISCORD_CHANNEL_ID: optionalNonEmptyString,
+  CRASH_RELAY_MENTION_ROLE_ID: optionalNonEmptyString,
+  CRASH_RELAY_ATTACH_JSON: booleanFromEnv.default(true),
+  CRASH_RELAY_STACK_LINES: z.coerce.number().int().min(1).max(20).default(8),
   LOG_LEVEL: z.string().default("info")
 });
 

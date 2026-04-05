@@ -14,6 +14,7 @@ import { WikiAutocompleteService } from "./services/wiki-autocomplete.js";
 import { InMemoryRateLimiter } from "./services/rate-limiter.js";
 import { ExpiringTokenStore } from "./services/token-store.js";
 import { WikiBot } from "./discord/bot.js";
+import { CrashTelemetryRelay } from "./telemetry/crash-relay.js";
 import type { ButtonPayload } from "./types/contracts.js";
 
 async function main() {
@@ -60,6 +61,11 @@ async function main() {
     rateLimiter,
     buttonTokenStore
   });
+  const crashRelay = new CrashTelemetryRelay({
+    config,
+    logger,
+    bot
+  });
 
   cron.schedule(config.WIKI_REFRESH_CRON, () => {
     logger.info({ cron: config.WIKI_REFRESH_CRON }, "Starting scheduled full wiki refresh");
@@ -75,6 +81,7 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "Shutting down");
+    await crashRelay.stop();
     await pool.end();
     process.exit(0);
   };
@@ -88,6 +95,7 @@ async function main() {
   });
 
   await bot.start();
+  await crashRelay.start();
 }
 
 main().catch((error) => {

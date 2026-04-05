@@ -57,6 +57,36 @@ export class WikiBot {
     await this.client.login(this.deps.config.DISCORD_TOKEN);
   }
 
+  public async sendMessageToChannel(params: {
+    channelId: string;
+    content: string;
+    attachmentJson?: string;
+    attachmentName?: string;
+  }): Promise<void> {
+    const channel = await this.client.channels.fetch(params.channelId);
+    if (!channel || !channel.isSendable()) {
+      throw new Error(`Channel ${params.channelId} is not a text-capable Discord channel.`);
+    }
+
+    const payload: {
+      content: string;
+      files?: Array<{ attachment: Buffer; name: string }>;
+    } = {
+      content: params.content
+    };
+
+    if (params.attachmentJson) {
+      payload.files = [
+        {
+          attachment: Buffer.from(params.attachmentJson, "utf8"),
+          name: params.attachmentName ?? "tamework-crash-report.json"
+        }
+      ];
+    }
+
+    await channel.send(payload);
+  }
+
   private async handleInteraction(interaction: Interaction): Promise<void> {
     try {
       if (interaction.isAutocomplete()) {
