@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -18,7 +18,9 @@ services:
       - postgres
     env_file:
       - .env
-    command: ["sh", "-lc", "node dist/scripts/migrate.js && node dist/src/index.js"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/hytale_mod_wiki_bot
+    command: ["sh", "-lc", "node dist/scripts/register-commands.js && node dist/scripts/migrate.js && node dist/src/index.js"]
 
 volumes:
   postgres_data:

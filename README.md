@@ -81,7 +81,33 @@ npm run dev
 docker compose up --build -d
 ```
 
-The compose bot service runs migrations before starting the bot process.
+The compose bot service registers guild commands, runs migrations, and then starts the bot process.
+Make sure `DISCORD_GUILD_ID` is set in `.env` when running via Docker.
+
+## GitHub Actions VPS Deploy
+
+Workflow file: `.github/workflows/deploy-vps.yml`
+
+It deploys on:
+
+- pushes to `main`
+- manual trigger (`workflow_dispatch`)
+
+Required repo secrets:
+
+- `VPS_HOST` (example: `178.156.251.66`)
+- `VPS_USER` (example: `deploy`)
+- `VPS_SSH_KEY` (private key for the deploy user)
+
+Deployment target path on server:
+
+- `/srv/apps/discord-bot`
+
+The workflow syncs repo files (excluding `.env`) and runs:
+
+```bash
+docker compose up -d --build
+```
 
 ## Testing
 

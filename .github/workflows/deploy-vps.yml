@@ -1,0 +1,56 @@
+name: Deploy Bot To VPS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS Host Key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync Files To VPS
+        run: |
+          rsync -az --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.idea/' \
+            --exclude 'node_modules/' \
+            --exclude 'dist/' \
+            --exclude '.env' \
+            ./ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/srv/apps/discord-bot/"
+
+      - name: Deploy On VPS
+        run: |
+          ssh "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" <<'EOF'
+          set -euo pipefail
+          cd /srv/apps/discord-bot
+
+          if [ ! -f .env ]; then
+            echo "ERROR: /srv/apps/discord-bot/.env is missing on VPS"
+            exit 1
+          fi
+
+          docker compose up -d --build
+          docker compose ps
+          EOF
