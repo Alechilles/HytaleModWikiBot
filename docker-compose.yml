@@ -16,11 +16,13 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
+    ports:
+      - "${CRASH_RELAY_BIND_HOST:-0.0.0.0}:${CRASH_RELAY_PORT:-8787}:${CRASH_RELAY_PORT:-8787}"
     env_file:
       - .env
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/hytale_mod_wiki_bot
-    command: ["sh", "-lc", "node dist/scripts/register-commands.js && node dist/scripts/migrate.js && node dist/src/index.js"]
+    command: ["sh", "-lc", "node dist/scripts/migrate.js && node dist/src/index.js"]
 
 volumes:
   postgres_data:

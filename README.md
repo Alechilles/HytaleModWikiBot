@@ -54,9 +54,18 @@ cp .env.example .env
 
 - `DISCORD_TOKEN`
 - `DISCORD_APPLICATION_ID`
-- `DISCORD_GUILD_ID` (required for command registration script)
 - `DATABASE_URL`
 - `POSTGRES_BIND_PORT` (for Docker host binding; default `5432`)
+- Optional crash relay settings (for Tamework crash telemetry -> Discord):
+  - `CRASH_RELAY_ENABLED` (`true`/`false`, default `false`)
+  - `CRASH_RELAY_BIND_HOST` (default `0.0.0.0`)
+  - `CRASH_RELAY_PORT` (default `8787`)
+  - `CRASH_RELAY_PATH` (default `/tamework/crash-report`)
+  - `CRASH_RELAY_AUTH_TOKEN` (shared secret expected in `Authorization: Bearer ...` or `X-API-Key`)
+  - `CRASH_RELAY_DISCORD_CHANNEL_ID` (target channel for crash alerts; required when relay enabled)
+  - `CRASH_RELAY_MENTION_ROLE_ID` (optional role mention on each alert)
+  - `CRASH_RELAY_ATTACH_JSON` (`true`/`false`, attach raw JSON report)
+  - `CRASH_RELAY_STACK_LINES` (default `8`, stack frames included in message body)
 - Optional (for API content search after wiki merge):
   - `WIKI_API_KEY`
   - `WIKI_CONTENT_SEARCH_ENABLED` (`true`/`false`)
@@ -74,10 +83,16 @@ npm install
 npm run migrate
 ```
 
-5. Register slash commands to your guild:
+5. Register slash commands:
 
 ```bash
-npm run register:commands
+npm run register:commands -- --scope global
+```
+
+For fast dev iteration in one server:
+
+```bash
+npm run register:commands -- --scope guild --guild-id <discord-guild-id>
 ```
 
 6. Start bot:
@@ -92,8 +107,29 @@ npm run dev
 docker compose up --build -d
 ```
 
-The compose bot service registers guild commands, runs migrations, and then starts the bot process.
-Make sure `DISCORD_GUILD_ID` is set in `.env` when running via Docker.
+The compose bot service runs migrations and then starts the bot process.
+Command registration is handled separately (CI/manual), not at container startup.
+
+## Tamework Crash Relay
+
+When enabled, the bot can expose an HTTP endpoint that accepts Tamework crash telemetry reports and forwards them to a Discord channel.
+
+1. Set these bot env vars:
+   - `CRASH_RELAY_ENABLED=true`
+   - `CRASH_RELAY_AUTH_TOKEN=<strong-random-secret>`
+   - `CRASH_RELAY_DISCORD_CHANNEL_ID=<discord-channel-id>`
+   - Optionally adjust `CRASH_RELAY_PORT` / `CRASH_RELAY_PATH`
+2. Restart the bot stack:
+   - `docker compose up -d --build`
+3. Point Tamework telemetry to the relay endpoint in `tamework-crash-telemetry.txt`:
+   - `enabled=true`
+   - `endpoint=https://<your-vps-domain-or-ip>:<CRASH_RELAY_PORT><CRASH_RELAY_PATH>`
+   - `api_key=<same secret as CRASH_RELAY_AUTH_TOKEN>`
+
+Payload handling notes:
+- `GET <CRASH_RELAY_PATH>` returns `{"ok":true}` for quick checks.
+- `POST <CRASH_RELAY_PATH>` requires the configured auth token when set.
+- Non-2xx processing outcomes return failure status so Tamework keeps reports queued for retry.
 
 ## GitHub Actions VPS Deploy
 
@@ -127,6 +163,7 @@ Required repo secrets:
 - `VPS_DEV_HOST` (can be same host as production)
 - `VPS_DEV_USER` (can be same user as production)
 - `VPS_DEV_SSH_KEY` (can be same private key as production)
+- `DEV_COMMAND_GUILD_ID` (one test guild ID for fast command updates in dev)
 
 Dev deployment target path on server:
 
@@ -138,12 +175,17 @@ Workflows sync repo files (excluding `.env`) and run:
 docker compose up -d --build
 ```
 
+Command registration behavior:
+
+- Production workflow registers commands globally (`--scope global`).
+- Dev workflow registers commands to `DEV_COMMAND_GUILD_ID` (`--scope guild --guild-id ...`).
+
 ## Dev/Staging Bot Setup
 
 To test features before shipping to `main`, run a second bot instance:
 
 1. Create a second Discord application + bot in the Discord Developer Portal.
-2. Generate a separate token and use the test app ID/guild ID in `/srv/apps/discord-bot-dev/.env`.
+2. Generate a separate token and use the test app ID in `/srv/apps/discord-bot-dev/.env`.
 3. Invite the test bot to your test server.
 4. Set a different Postgres host port in the dev `.env` so prod/dev can run side-by-side on one VPS, for example:
    - `POSTGRES_BIND_PORT=5433`

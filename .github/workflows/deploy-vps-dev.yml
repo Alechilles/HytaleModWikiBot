@@ -42,7 +42,7 @@ jobs:
 
       - name: Deploy Dev Stack On VPS
         run: |
-          ssh "${{ secrets.VPS_DEV_USER }}@${{ secrets.VPS_DEV_HOST }}" <<'EOF'
+          ssh "${{ secrets.VPS_DEV_USER }}@${{ secrets.VPS_DEV_HOST }}" <<EOF
           set -euo pipefail
           cd /srv/apps/discord-bot-dev
 
@@ -51,6 +51,12 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${{ secrets.DEV_COMMAND_GUILD_ID }}" ]; then
+            echo "ERROR: DEV_COMMAND_GUILD_ID secret is missing"
+            exit 1
+          fi
+
           docker compose -p hytalemodwikibot-dev up -d --build
+          docker compose -p hytalemodwikibot-dev exec -T bot node dist/scripts/register-commands.js --scope guild --guild-id "${{ secrets.DEV_COMMAND_GUILD_ID }}"
           docker compose -p hytalemodwikibot-dev ps
           EOF

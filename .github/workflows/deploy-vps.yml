@@ -52,5 +52,6 @@ jobs:
           fi
 
           docker compose up -d --build
+          docker compose exec -T bot node dist/scripts/register-commands.js --scope global
           docker compose ps
           EOF
