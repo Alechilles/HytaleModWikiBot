@@ -1,27 +1,47 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { WikiBot } from "../discord/bot.js";
+import { shortHash } from "../utils.js";
 
-const MAX_BODY_BYTES = 1_000_000;
+const GLOBAL_LIMIT_KEY = "__global__";
 
-interface CrashReportEnvelope {
-  reportId?: string;
-  source?: string;
-  fingerprint?: string;
-  capturedAtUtc?: string;
-  pluginIdentifier?: string;
-  pluginVersion?: string;
-  threadName?: string;
-  worldName?: string | null;
-  worldRemovalReason?: string | null;
-  worldFailurePluginIdentifier?: string | null;
-  throwable?: {
-    type?: string;
-    message?: string;
-    stack?: string[];
-  };
-}
+const crashThrowableSchema = z
+  .object({
+    type: z.string().trim().min(1).max(240).optional(),
+    message: z.string().trim().min(1).max(2_000).optional(),
+    stack: z.array(z.string().max(1_000)).max(200).optional()
+  })
+  .optional();
+
+const crashReportSchema = z
+  .object({
+    reportId: z.string().trim().min(1).max(200).optional(),
+    source: z.string().trim().min(1).max(120).optional(),
+    fingerprint: z.string().trim().min(1).max(200).optional(),
+    capturedAtUtc: z.string().trim().min(1).max(80).optional(),
+    pluginIdentifier: z.string().trim().min(1).max(200).optional(),
+    pluginVersion: z.string().trim().min(1).max(120).optional(),
+    threadName: z.string().trim().min(1).max(200).optional(),
+    worldName: z.string().trim().min(1).max(200).nullable().optional(),
+    worldRemovalReason: z.string().trim().min(1).max(200).nullable().optional(),
+    worldFailurePluginIdentifier: z.string().trim().min(1).max(200).nullable().optional(),
+    throwable: crashThrowableSchema
+  })
+  .strict()
+  .refine(
+    (value) =>
+      Boolean(
+        value.fingerprint ||
+          value.throwable?.type ||
+          value.throwable?.message ||
+          (value.throwable?.stack != null && value.throwable.stack.length > 0)
+      ),
+    { message: "missing-crash-identifiers" }
+  );
+
+type CrashReportEnvelope = z.infer<typeof crashReportSchema>;
 
 interface CrashRelayDependencies {
   config: AppConfig;
@@ -35,12 +55,47 @@ interface CrashRelayMessage {
   attachmentName?: string;
 }
 
+interface WindowCounterState {
+  count: number;
+  resetAtMs: number;
+}
+
+interface FingerprintState {
+  fingerprint: string;
+  pluginIdentifier: string;
+  throwableType: string;
+  firstSeenAtMs: number;
+  lastSeenAtMs: number;
+  suppressUntilMs: number;
+  suppressedCount: number;
+}
+
+interface RateLimitDecision {
+  allowed: boolean;
+  retryAfterSec: number;
+}
+
+class PayloadTooLargeError extends Error {}
+
 export class CrashTelemetryRelay {
   private server: Server | null = null;
+  private summaryTimer: NodeJS.Timeout | null = null;
+  private flushInProgress = false;
   private readonly path: string;
+  private readonly blockedIps: Set<string>;
+  private readonly blockedFingerprints: Set<string>;
+  private readonly ipRateLimits = new Map<string, WindowCounterState>();
+  private readonly globalRateLimits = new Map<string, WindowCounterState>();
+  private readonly fingerprintStates = new Map<string, FingerprintState>();
+  private readonly fingerprintCooldownMs: number;
+  private readonly summaryIntervalMs: number;
 
   public constructor(private readonly deps: CrashRelayDependencies) {
     this.path = normalizeRelayPath(this.deps.config.CRASH_RELAY_PATH);
+    this.blockedIps = parseCsvSet(this.deps.config.CRASH_RELAY_BLOCKED_IPS);
+    this.blockedFingerprints = parseCsvSet(this.deps.config.CRASH_RELAY_BLOCKED_FINGERPRINTS);
+    this.fingerprintCooldownMs = this.deps.config.CRASH_RELAY_FINGERPRINT_COOLDOWN_SECONDS * 1_000;
+    this.summaryIntervalMs = this.deps.config.CRASH_RELAY_SUMMARY_INTERVAL_SECONDS * 1_000;
   }
 
   public async start(): Promise<void> {
@@ -82,13 +137,20 @@ export class CrashTelemetryRelay {
       server.listen(this.deps.config.CRASH_RELAY_PORT, this.deps.config.CRASH_RELAY_BIND_HOST);
     });
 
+    this.summaryTimer = setInterval(() => {
+      void this.flushSuppressedSummaries();
+    }, this.summaryIntervalMs);
+    this.summaryTimer.unref();
+
     this.deps.logger.info(
       {
         host: this.deps.config.CRASH_RELAY_BIND_HOST,
         port: this.deps.config.CRASH_RELAY_PORT,
         path: this.path,
         channelId: this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID,
-        authTokenConfigured: Boolean(this.deps.config.CRASH_RELAY_AUTH_TOKEN)
+        authTokenConfigured: Boolean(this.deps.config.CRASH_RELAY_AUTH_TOKEN),
+        blockedIpCount: this.blockedIps.size,
+        blockedFingerprintCount: this.blockedFingerprints.size
       },
       "Crash telemetry relay started"
     );
@@ -97,6 +159,12 @@ export class CrashTelemetryRelay {
   public async stop(): Promise<void> {
     const active = this.server;
     this.server = null;
+
+    if (this.summaryTimer) {
+      clearInterval(this.summaryTimer);
+      this.summaryTimer = null;
+    }
+
     if (!active) {
       return;
     }
@@ -130,15 +198,80 @@ export class CrashTelemetryRelay {
       return;
     }
 
+    const normalizedIp = normalizeIp(request.socket.remoteAddress);
+    if (this.blockedIps.has(normalizedIp)) {
+      writeJson(response, 403, { error: "blocked_ip" });
+      return;
+    }
+
+    const globalDecision = takeWindowedRateLimit(
+      this.globalRateLimits,
+      GLOBAL_LIMIT_KEY,
+      this.deps.config.CRASH_RELAY_GLOBAL_RATE_LIMIT_MAX,
+      this.deps.config.CRASH_RELAY_GLOBAL_RATE_LIMIT_WINDOW_SECONDS,
+      Date.now()
+    );
+    if (!globalDecision.allowed) {
+      this.deps.logger.warn(
+        { scope: "global", retryAfterSec: globalDecision.retryAfterSec },
+        "Crash telemetry request rate-limited"
+      );
+      writeRateLimited(response, globalDecision.retryAfterSec, "global");
+      return;
+    }
+
+    const ipDecision = takeWindowedRateLimit(
+      this.ipRateLimits,
+      normalizedIp,
+      this.deps.config.CRASH_RELAY_IP_RATE_LIMIT_MAX,
+      this.deps.config.CRASH_RELAY_IP_RATE_LIMIT_WINDOW_SECONDS,
+      Date.now()
+    );
+    if (!ipDecision.allowed) {
+      this.deps.logger.warn(
+        { scope: "ip", ip: normalizedIp, retryAfterSec: ipDecision.retryAfterSec },
+        "Crash telemetry request rate-limited"
+      );
+      writeRateLimited(response, ipDecision.retryAfterSec, "ip");
+      return;
+    }
+
     try {
-      const rawBody = await readBody(request, MAX_BODY_BYTES);
-      const parsed = JSON.parse(rawBody) as CrashReportEnvelope;
+      const rawBody = await readBody(request, this.deps.config.CRASH_RELAY_MAX_BODY_BYTES);
+      const parsedUnknown = JSON.parse(rawBody) as unknown;
+      const parseResult = crashReportSchema.safeParse(parsedUnknown);
+      if (!parseResult.success) {
+        writeJson(response, 422, {
+          error: "invalid_payload",
+          details: parseResult.error.issues.map((issue) => issue.message).slice(0, 3)
+        });
+        return;
+      }
+
+      const parsed = parseResult.data;
+      const fingerprint = deriveFingerprint(parsed);
+
+      if (this.blockedFingerprints.has(fingerprint.toLowerCase())) {
+        writeJson(response, 403, { error: "blocked_fingerprint" });
+        return;
+      }
+
+      const duplicateDecision = this.registerFingerprintObservation(fingerprint, parsed, Date.now());
+      if (!duplicateDecision.shouldPostNow) {
+        writeJson(response, 202, {
+          ok: true,
+          suppressed: true,
+          fingerprint
+        });
+        return;
+      }
+
       const channelId = this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID;
       if (!channelId) {
         throw new Error("CRASH_RELAY_DISCORD_CHANNEL_ID is required when CRASH_RELAY_ENABLED=true");
       }
 
-      const message = buildCrashRelayMessage(parsed, rawBody, {
+      const message = buildCrashRelayMessage({ ...parsed, fingerprint }, rawBody, {
         includeJsonAttachment: this.deps.config.CRASH_RELAY_ATTACH_JSON,
         stackLines: this.deps.config.CRASH_RELAY_STACK_LINES,
         ...(this.deps.config.CRASH_RELAY_MENTION_ROLE_ID
@@ -160,8 +293,18 @@ export class CrashTelemetryRelay {
             }
       );
 
-      writeJson(response, 202, { ok: true });
+      writeJson(response, 202, { ok: true, fingerprint });
     } catch (error) {
+      if (error instanceof PayloadTooLargeError) {
+        writeJson(response, 413, { error: "payload_too_large" });
+        return;
+      }
+
+      if (error instanceof SyntaxError) {
+        writeJson(response, 400, { error: "invalid_json" });
+        return;
+      }
+
       this.deps.logger.error(
         {
           err: error,
@@ -171,6 +314,101 @@ export class CrashTelemetryRelay {
         "Failed to process incoming crash telemetry report"
       );
       writeJson(response, 500, { error: "relay_failed" });
+    }
+  }
+
+  private registerFingerprintObservation(
+    fingerprint: string,
+    envelope: CrashReportEnvelope,
+    nowMs: number
+  ): { shouldPostNow: boolean } {
+    const existing = this.fingerprintStates.get(fingerprint);
+    if (!existing || nowMs >= existing.suppressUntilMs) {
+      if (existing && existing.suppressedCount > 0) {
+        void this.postSuppressedSummary(existing);
+      }
+
+      this.fingerprintStates.set(fingerprint, {
+        fingerprint,
+        pluginIdentifier: fallback(envelope.pluginIdentifier, "unknown"),
+        throwableType: fallback(envelope.throwable?.type, "unknown"),
+        firstSeenAtMs: nowMs,
+        lastSeenAtMs: nowMs,
+        suppressUntilMs: nowMs + this.fingerprintCooldownMs,
+        suppressedCount: 0
+      });
+
+      return { shouldPostNow: true };
+    }
+
+    existing.lastSeenAtMs = nowMs;
+    existing.suppressedCount += 1;
+    return { shouldPostNow: false };
+  }
+
+  private async flushSuppressedSummaries(): Promise<void> {
+    if (this.flushInProgress || !this.deps.config.CRASH_RELAY_ENABLED) {
+      return;
+    }
+
+    this.flushInProgress = true;
+    try {
+      const nowMs = Date.now();
+      for (const [fingerprint, state] of this.fingerprintStates.entries()) {
+        if (nowMs < state.suppressUntilMs) {
+          continue;
+        }
+
+        if (state.suppressedCount === 0) {
+          this.fingerprintStates.delete(fingerprint);
+          continue;
+        }
+
+        const sent = await this.postSuppressedSummary(state);
+        if (sent) {
+          this.fingerprintStates.delete(fingerprint);
+        } else {
+          state.suppressUntilMs = nowMs + this.summaryIntervalMs;
+        }
+      }
+    } catch (error) {
+      this.deps.logger.error({ err: error }, "Crash relay summary flush failed");
+    } finally {
+      this.flushInProgress = false;
+    }
+  }
+
+  private async postSuppressedSummary(state: FingerprintState): Promise<boolean> {
+    const channelId = this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID;
+    if (!channelId) {
+      return false;
+    }
+
+    const cooldownSeconds = this.deps.config.CRASH_RELAY_FINGERPRINT_COOLDOWN_SECONDS;
+    const content =
+      `Suppressed ${state.suppressedCount} duplicate crash reports in the last ${cooldownSeconds}s.\n` +
+      `fingerprint: \`${safeInline(state.fingerprint)}\`\n` +
+      `plugin: \`${safeInline(state.pluginIdentifier)}\`\n` +
+      `throwable: \`${safeInline(state.throwableType)}\``;
+
+    try {
+      await this.deps.bot.sendMessageToChannel({ channelId, content });
+      this.deps.logger.info(
+        {
+          fingerprint: state.fingerprint,
+          suppressedCount: state.suppressedCount,
+          firstSeenAt: new Date(state.firstSeenAtMs).toISOString(),
+          lastSeenAt: new Date(state.lastSeenAtMs).toISOString()
+        },
+        "Posted crash relay duplicate summary"
+      );
+      return true;
+    } catch (error) {
+      this.deps.logger.warn(
+        { err: error, fingerprint: state.fingerprint, suppressedCount: state.suppressedCount },
+        "Failed to post crash relay duplicate summary"
+      );
+      return false;
     }
   }
 }
@@ -256,6 +494,41 @@ function fallback(value: string | null | undefined, fallbackValue: string): stri
   return value.trim();
 }
 
+function parseCsvSet(value: string | undefined): Set<string> {
+  if (!value) {
+    return new Set();
+  }
+
+  return new Set(
+    value
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function normalizeIp(value: string | undefined): string {
+  if (!value) {
+    return "unknown";
+  }
+
+  return value.replace(/^::ffff:/i, "").trim().toLowerCase();
+}
+
+function deriveFingerprint(envelope: CrashReportEnvelope): string {
+  if (envelope.fingerprint?.trim()) {
+    return safeFileToken(envelope.fingerprint.trim().toLowerCase());
+  }
+
+  const stackTop = envelope.throwable?.stack?.[0] ?? "";
+  return shortHash([
+    fallback(envelope.pluginIdentifier, "unknown"),
+    fallback(envelope.throwable?.type, "unknown"),
+    fallback(envelope.throwable?.message, "unknown"),
+    stackTop
+  ]);
+}
+
 function safeInline(value: string): string {
   return value.replace(/`/g, "'");
 }
@@ -329,7 +602,7 @@ function readBody(request: IncomingMessage, maxBytes: number): Promise<string> {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       total += buffer.length;
       if (total > maxBytes) {
-        reject(new Error(`Payload exceeds ${maxBytes} bytes`));
+        reject(new PayloadTooLargeError(`Payload exceeds ${maxBytes} bytes`));
         request.destroy();
         return;
       }
@@ -353,9 +626,48 @@ function writeJson(response: ServerResponse, statusCode: number, payload: Record
   response.end(`${JSON.stringify(payload)}\n`);
 }
 
+function writeRateLimited(response: ServerResponse, retryAfterSec: number, scope: "global" | "ip"): void {
+  response.statusCode = 429;
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.setHeader("Retry-After", String(Math.max(1, retryAfterSec)));
+  response.end(
+    `${JSON.stringify({
+      error: "rate_limited",
+      scope,
+      retryAfterSec: Math.max(1, retryAfterSec)
+    })}\n`
+  );
+}
+
+function takeWindowedRateLimit(
+  stateMap: Map<string, WindowCounterState>,
+  key: string,
+  maxRequests: number,
+  windowSeconds: number,
+  nowMs: number
+): RateLimitDecision {
+  const windowMs = windowSeconds * 1_000;
+  const existing = stateMap.get(key);
+  if (!existing || nowMs >= existing.resetAtMs) {
+    stateMap.set(key, { count: 1, resetAtMs: nowMs + windowMs });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  if (existing.count >= maxRequests) {
+    return { allowed: false, retryAfterSec: Math.ceil((existing.resetAtMs - nowMs) / 1_000) };
+  }
+
+  existing.count += 1;
+  return { allowed: true, retryAfterSec: 0 };
+}
+
 export const crashRelayInternals = {
   buildCrashRelayMessage,
   isAuthorized,
   normalizeRelayPath,
-  extractPathname
+  extractPathname,
+  parseCsvSet,
+  normalizeIp,
+  deriveFingerprint,
+  takeWindowedRateLimit
 };

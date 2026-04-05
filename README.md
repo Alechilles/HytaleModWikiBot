@@ -66,6 +66,13 @@ cp .env.example .env
   - `CRASH_RELAY_MENTION_ROLE_ID` (optional role mention on each alert)
   - `CRASH_RELAY_ATTACH_JSON` (`true`/`false`, attach raw JSON report)
   - `CRASH_RELAY_STACK_LINES` (default `8`, stack frames included in message body)
+  - `CRASH_RELAY_MAX_BODY_BYTES` (default `262144`)
+  - `CRASH_RELAY_IP_RATE_LIMIT_MAX` / `CRASH_RELAY_IP_RATE_LIMIT_WINDOW_SECONDS`
+  - `CRASH_RELAY_GLOBAL_RATE_LIMIT_MAX` / `CRASH_RELAY_GLOBAL_RATE_LIMIT_WINDOW_SECONDS`
+  - `CRASH_RELAY_FINGERPRINT_COOLDOWN_SECONDS` (duplicate suppression window)
+  - `CRASH_RELAY_SUMMARY_INTERVAL_SECONDS` (duplicate summary flush cadence)
+  - `CRASH_RELAY_BLOCKED_IPS` (comma-separated blocklist)
+  - `CRASH_RELAY_BLOCKED_FINGERPRINTS` (comma-separated blocklist)
 - Optional (for API content search after wiki merge):
   - `WIKI_API_KEY`
   - `WIKI_CONTENT_SEARCH_ENABLED` (`true`/`false`)
@@ -129,6 +136,12 @@ When enabled, the bot can expose an HTTP endpoint that accepts Tamework crash te
 Payload handling notes:
 - `GET <CRASH_RELAY_PATH>` returns `{"ok":true}` for quick checks.
 - `POST <CRASH_RELAY_PATH>` requires the configured auth token when set.
+- Public ingest hardening is enabled:
+  - strict JSON payload validation
+  - max-body enforcement
+  - per-IP and global rate limits
+  - duplicate-fingerprint suppression with summary messages
+  - optional IP/fingerprint blocklists
 - Non-2xx processing outcomes return failure status so Tamework keeps reports queued for retry.
 
 ## GitHub Actions VPS Deploy

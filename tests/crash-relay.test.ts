@@ -75,4 +75,54 @@ describe("CrashTelemetryRelay internals", () => {
     );
     expect(denied).toBe(false);
   });
+
+  it("parses CSV blocklists and normalizes IPs", () => {
+    const entries = crashRelayInternals.parseCsvSet(" 192.168.1.10,::FFFF:10.0.0.1 ,, DeadBeef ");
+    expect(entries.has("192.168.1.10")).toBe(true);
+    expect(entries.has("::ffff:10.0.0.1")).toBe(true);
+    expect(entries.has("deadbeef")).toBe(true);
+
+    expect(crashRelayInternals.normalizeIp("::ffff:127.0.0.1")).toBe("127.0.0.1");
+  });
+
+  it("derives stable fingerprint when explicit fingerprint is missing", () => {
+    const fingerprintFromField = crashRelayInternals.deriveFingerprint({
+      fingerprint: "Dead Beef!!"
+    } as any);
+    expect(fingerprintFromField).toBe("deadbeef");
+
+    const derivedOne = crashRelayInternals.deriveFingerprint({
+      pluginIdentifier: "Alechilles:Alec's Tamework!",
+      throwable: {
+        type: "java.lang.IllegalStateException",
+        message: "Unexpected state",
+        stack: ["Foo.bar(Foo.java:42)"]
+      }
+    } as any);
+    const derivedTwo = crashRelayInternals.deriveFingerprint({
+      pluginIdentifier: "Alechilles:Alec's Tamework!",
+      throwable: {
+        type: "java.lang.IllegalStateException",
+        message: "Unexpected state",
+        stack: ["Foo.bar(Foo.java:42)"]
+      }
+    } as any);
+
+    expect(derivedOne).toHaveLength(16);
+    expect(derivedOne).toBe(derivedTwo);
+  });
+
+  it("enforces windowed rate limits", () => {
+    const counters = new Map<string, { count: number; resetAtMs: number }>();
+    const now = 1_000;
+
+    const first = crashRelayInternals.takeWindowedRateLimit(counters, "ip:1.2.3.4", 2, 60, now);
+    const second = crashRelayInternals.takeWindowedRateLimit(counters, "ip:1.2.3.4", 2, 60, now + 1);
+    const third = crashRelayInternals.takeWindowedRateLimit(counters, "ip:1.2.3.4", 2, 60, now + 2);
+
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(true);
+    expect(third.allowed).toBe(false);
+    expect(third.retryAfterSec).toBeGreaterThan(0);
+  });
 });

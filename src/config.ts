@@ -50,6 +50,15 @@ const configSchema = z.object({
   CRASH_RELAY_MENTION_ROLE_ID: optionalNonEmptyString,
   CRASH_RELAY_ATTACH_JSON: booleanFromEnv.default(true),
   CRASH_RELAY_STACK_LINES: z.coerce.number().int().min(1).max(20).default(8),
+  CRASH_RELAY_MAX_BODY_BYTES: z.coerce.number().int().min(1_024).max(5_000_000).default(262_144),
+  CRASH_RELAY_IP_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+  CRASH_RELAY_IP_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  CRASH_RELAY_GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  CRASH_RELAY_GLOBAL_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+  CRASH_RELAY_FINGERPRINT_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(300),
+  CRASH_RELAY_SUMMARY_INTERVAL_SECONDS: z.coerce.number().int().min(5).default(30),
+  CRASH_RELAY_BLOCKED_IPS: optionalNonEmptyString,
+  CRASH_RELAY_BLOCKED_FINGERPRINTS: optionalNonEmptyString,
   LOG_LEVEL: z.string().default("info")
 });
 
