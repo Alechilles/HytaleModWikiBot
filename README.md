@@ -56,6 +56,7 @@ cp .env.example .env
 - `DISCORD_APPLICATION_ID`
 - `DISCORD_GUILD_ID` (required for command registration script)
 - `DATABASE_URL`
+- `POSTGRES_BIND_PORT` (for Docker host binding; default `5432`)
 - Optional (for API content search after wiki merge):
   - `WIKI_API_KEY`
   - `WIKI_CONTENT_SEARCH_ENABLED` (`true`/`false`)
@@ -96,9 +97,12 @@ Make sure `DISCORD_GUILD_ID` is set in `.env` when running via Docker.
 
 ## GitHub Actions VPS Deploy
 
-Workflow file: `.github/workflows/deploy-vps.yml`
+Workflow files:
 
-It deploys on:
+- `.github/workflows/deploy-vps.yml` (production lane)
+- `.github/workflows/deploy-vps-dev.yml` (dev/staging lane)
+
+Production workflow deploys on:
 
 - pushes to `main`
 - manual trigger (`workflow_dispatch`)
@@ -113,11 +117,40 @@ Deployment target path on server:
 
 - `/srv/apps/discord-bot`
 
-The workflow syncs repo files (excluding `.env`) and runs:
+Dev workflow deploys on:
+
+- pushes to `dev`
+- manual trigger (`workflow_dispatch`)
+
+Required repo secrets:
+
+- `VPS_DEV_HOST` (can be same host as production)
+- `VPS_DEV_USER` (can be same user as production)
+- `VPS_DEV_SSH_KEY` (can be same private key as production)
+
+Dev deployment target path on server:
+
+- `/srv/apps/discord-bot-dev`
+
+Workflows sync repo files (excluding `.env`) and run:
 
 ```bash
 docker compose up -d --build
 ```
+
+## Dev/Staging Bot Setup
+
+To test features before shipping to `main`, run a second bot instance:
+
+1. Create a second Discord application + bot in the Discord Developer Portal.
+2. Generate a separate token and use the test app ID/guild ID in `/srv/apps/discord-bot-dev/.env`.
+3. Invite the test bot to your test server.
+4. Set a different Postgres host port in the dev `.env` so prod/dev can run side-by-side on one VPS, for example:
+   - `POSTGRES_BIND_PORT=5433`
+5. Keep the container DB URL as:
+   - `DATABASE_URL=postgres://postgres:postgres@localhost:5432/hytale_mod_wiki_bot` (host-side scripts)
+   - Compose already injects container-side `DATABASE_URL` to use the internal `postgres` service.
+6. Push to `dev` (or run the dev workflow manually) to publish staging.
 
 ## Testing
 

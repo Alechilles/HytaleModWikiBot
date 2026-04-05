@@ -1,0 +1,56 @@
+name: Deploy Dev Bot To VPS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+
+concurrency:
+  group: deploy-vps-dev
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_DEV_SSH_KEY }}
+
+      - name: Add VPS Host Key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.VPS_DEV_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync Files To VPS (dev)
+        run: |
+          rsync -az --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.idea/' \
+            --exclude 'node_modules/' \
+            --exclude 'dist/' \
+            --exclude '.env' \
+            ./ "${{ secrets.VPS_DEV_USER }}@${{ secrets.VPS_DEV_HOST }}:/srv/apps/discord-bot-dev/"
+
+      - name: Deploy Dev Stack On VPS
+        run: |
+          ssh "${{ secrets.VPS_DEV_USER }}@${{ secrets.VPS_DEV_HOST }}" <<'EOF'
+          set -euo pipefail
+          cd /srv/apps/discord-bot-dev
+
+          if [ ! -f .env ]; then
+            echo "ERROR: /srv/apps/discord-bot-dev/.env is missing on VPS"
+            exit 1
+          fi
+
+          docker compose -p hytalemodwikibot-dev up -d --build
+          docker compose -p hytalemodwikibot-dev ps
+          EOF
