@@ -4,7 +4,7 @@ import { CacheRepository } from "../db/repositories/cache-repo.js";
 import { GuildSettingsRepository } from "../db/repositories/guild-settings-repo.js";
 import type { CandidatePage, WikiLookupInput, WikiLookupResult } from "../types/contracts.js";
 import { normalizeText, similarityScore, slugify } from "../utils.js";
-import { WikiClient } from "./wiki-client.js";
+import { WikiClient, type WikiContentSearchResult } from "./wiki-client.js";
 import { WikiIndexer } from "./wiki-indexer.js";
 
 interface ResolvedLookupScope {
@@ -20,7 +20,9 @@ export class WikiLookupService {
     private readonly indexer: WikiIndexer,
     private readonly wikiClient: WikiClient,
     private readonly similarityThreshold: number,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly contentSearchEnabled = false,
+    private readonly contentSearchLimit = 10
   ) {}
 
   public async resolveModIdentifier(guildId: string, rawInput: string): Promise<string | null> {
@@ -172,6 +174,31 @@ export class WikiLookupService {
 
     const topCandidates = candidates.sort((a, b) => b.score - a.score).slice(0, 5);
     const top = topCandidates[0];
+    if (top && top.score >= this.similarityThreshold) {
+      return {
+        status: "did_you_mean",
+        resolvedModSlug: top.modSlug,
+        resolvedUrl: top.url,
+        resolvedTitle: top.title,
+        explanation: `Did you mean ${top.title}?`,
+        candidates: topCandidates.slice(1, 4)
+      };
+    }
+
+    if (this.contentSearchEnabled) {
+      const contentCandidates = await this.searchByContent(orderedMods, parsed.pageQuery);
+      const contentTop = contentCandidates[0];
+      if (contentTop) {
+        return {
+          status: "did_you_mean",
+          resolvedModSlug: contentTop.modSlug,
+          resolvedUrl: contentTop.url,
+          resolvedTitle: contentTop.title,
+          explanation: `Matched page content: ${contentTop.title}`,
+          candidates: contentCandidates.slice(1, 4)
+        };
+      }
+    }
 
     if (!top) {
       return {
@@ -181,17 +208,6 @@ export class WikiLookupService {
         resolvedTitle: null,
         explanation: "No matching wiki page found.",
         candidates: []
-      };
-    }
-
-    if (top.score >= this.similarityThreshold) {
-      return {
-        status: "did_you_mean",
-        resolvedModSlug: top.modSlug,
-        resolvedUrl: top.url,
-        resolvedTitle: top.title,
-        explanation: `Did you mean ${top.title}?`,
-        candidates: topCandidates.slice(1, 4)
       };
     }
 
@@ -239,6 +255,57 @@ export class WikiLookupService {
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
+  }
+
+  private async searchByContent(modSlugs: string[], pageQuery: string): Promise<CandidatePage[]> {
+    const rawCandidates: CandidatePage[] = [];
+
+    for (const modSlug of modSlugs) {
+      try {
+        const results = await this.wikiClient.searchModPages(modSlug, pageQuery, this.contentSearchLimit);
+        rawCandidates.push(
+          ...results.map((result, index) => ({
+            modSlug: result.modSlug,
+            pageSlug: result.pageSlug,
+            title: result.title,
+            url: result.url,
+            score: this.scoreContentCandidate(pageQuery, result, index)
+          }))
+        );
+      } catch (error) {
+        this.logger.warn({ modSlug, err: error }, "Content search request failed; using cached matching fallback");
+      }
+    }
+
+    const deduped = new Map<string, CandidatePage>();
+
+    for (const candidate of rawCandidates) {
+      const existing = deduped.get(candidate.url);
+      if (!existing || candidate.score > existing.score) {
+        deduped.set(candidate.url, candidate);
+      }
+    }
+
+    return Array.from(deduped.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+  }
+
+  private scoreContentCandidate(pageQuery: string, result: WikiContentSearchResult, index: number): number {
+    const normalizedQuery = normalizeText(pageQuery);
+    const querySlug = slugify(pageQuery);
+    const titleScore = similarityScore(normalizedQuery, normalizeText(result.title));
+    const slugScore = similarityScore(querySlug, result.pageSlug);
+    const rankBase = Math.max(0.35, 0.75 - index * 0.08);
+    const normalizedSnippet = normalizeText(result.snippet);
+    const snippetBonus = normalizedQuery && normalizedSnippet.includes(normalizedQuery) ? 0.15 : 0;
+
+    let score = Math.max(rankBase, titleScore, slugScore) + snippetBonus;
+    if (normalizeText(result.title) === normalizedQuery || result.pageSlug === querySlug) {
+      score += 0.2;
+    }
+
+    return Math.min(1, score);
   }
 
   private async resolveModsAndQuery(

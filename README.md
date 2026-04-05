@@ -28,6 +28,7 @@ Discord bot for `wiki.hytalemodding.dev` with guild-scoped aliases and slash-com
 - Embed previews are disabled by default (clean markdown links); can be toggled per guild
 - Per-user/per-guild command rate limits and autocomplete throttle
 - Nightly full wiki cache refresh + on-demand background mod warm
+- Optional API-backed page content search with automatic fallback to cached title/slug matching
 - Structured query logging to Postgres
 
 ## Requirements
@@ -50,6 +51,10 @@ cp .env.example .env
 - `DISCORD_APPLICATION_ID`
 - `DISCORD_GUILD_ID` (required for command registration script)
 - `DATABASE_URL`
+- Optional (for API content search after wiki merge):
+  - `WIKI_API_KEY`
+  - `WIKI_CONTENT_SEARCH_ENABLED` (`true`/`false`)
+  - `WIKI_CONTENT_SEARCH_LIMIT` (1-25)
 
 3. Install dependencies:
 
@@ -121,3 +126,4 @@ npm test
 - v1 is designed for single-instance deployment.
 - Cache refresh schedule is controlled by `WIKI_REFRESH_CRON`.
 - Alias overwrite requires explicit force: `/wiki-alias set ... force:true`.
+- If API content search is enabled but key is missing/unusable, the bot falls back to current cached matching behavior.

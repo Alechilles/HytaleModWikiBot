@@ -36,8 +36,19 @@ export interface WikiModDetail {
   raw: unknown;
 }
 
+export interface WikiContentSearchResult {
+  modSlug: string;
+  pageSlug: string;
+  title: string;
+  url: string;
+  snippet: string;
+}
+
 export class WikiClient {
-  public constructor(private readonly baseUrl: string) {}
+  public constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey?: string
+  ) {}
 
   public getBaseUrl(): string {
     return this.baseUrl;
@@ -106,6 +117,55 @@ export class WikiClient {
     });
 
     return response.status === 200;
+  }
+
+  public async searchModPages(modSlug: string, query: string, limit = 10): Promise<WikiContentSearchResult[]> {
+    if (!this.apiKey) {
+      return [];
+    }
+
+    const url = new URL(`/api/mods/${encodeURIComponent(modSlug)}/pages/search`, this.baseUrl);
+    url.searchParams.set("query", query);
+    url.searchParams.set("limit", String(limit));
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        "User-Agent": "HytaleModWikiBot/0.1",
+        Authorization: `Bearer ${this.apiKey}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Wiki content search failed: ${response.status} ${url.toString()}`);
+    }
+
+    const payload = (await response.json()) as { results?: unknown[] };
+    const rawResults = Array.isArray(payload.results) ? payload.results : [];
+
+    return rawResults
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        const typed = entry as Record<string, unknown>;
+        const pageSlug = typeof typed.slug === "string" ? typed.slug : null;
+        const title = typeof typed.title === "string" ? typed.title : null;
+        const urlValue = typeof typed.url === "string" ? typed.url : null;
+        if (!pageSlug || !title || !urlValue) {
+          return null;
+        }
+
+        return {
+          modSlug,
+          pageSlug,
+          title,
+          url: urlValue,
+          snippet: typeof typed.snippet === "string" ? typed.snippet : ""
+        } satisfies WikiContentSearchResult;
+      })
+      .filter((entry): entry is WikiContentSearchResult => entry !== null);
   }
 
   private async getText(url: string): Promise<string> {

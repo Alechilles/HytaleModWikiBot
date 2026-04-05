@@ -5,6 +5,9 @@ function createLookupService(overrides?: {
   aliasMap?: Record<string, string>;
   defaultMod?: string | null;
   defaultMods?: string[];
+  contentSearchEnabled?: boolean;
+  contentResultsByMod?: Record<string, Array<{ slug: string; title: string; url: string; snippet?: string }>>;
+  contentSearchThrows?: boolean;
 }) {
   const aliasMap = overrides?.aliasMap ?? { ah: "alecs-animal-husbandry" };
   const defaultMods = overrides?.defaultMods ?? (overrides?.defaultMod ? [overrides.defaultMod] : []);
@@ -85,7 +88,20 @@ function createLookupService(overrides?: {
 
   const wikiClient = {
     getBaseUrl: () => "https://wiki.hytalemodding.dev",
-    pageExists: async () => false
+    pageExists: async () => false,
+    searchModPages: async (modSlug: string) => {
+      if (overrides?.contentSearchThrows) {
+        throw new Error("search API unavailable");
+      }
+
+      return (overrides?.contentResultsByMod?.[modSlug] ?? []).map((entry) => ({
+        modSlug,
+        pageSlug: entry.slug,
+        title: entry.title,
+        url: entry.url,
+        snippet: entry.snippet ?? ""
+      }));
+    }
   };
 
   const logger = {
@@ -101,7 +117,9 @@ function createLookupService(overrides?: {
     indexer as any,
     wikiClient as any,
     0.58,
-    logger as any
+    logger as any,
+    overrides?.contentSearchEnabled ?? false,
+    10
   );
 }
 
@@ -166,5 +184,51 @@ describe("WikiLookupService", () => {
     expect(result.status).toBe("found");
     expect(result.resolvedModSlug).toBe("alecs-tamework");
     expect(result.resolvedUrl).toBe("https://wiki.hytalemodding.dev/mod/alecs-tamework/command-items");
+  });
+
+  it("uses content search API when enabled and local matching is not confident", async () => {
+    const service = createLookupService({
+      aliasMap: {},
+      defaultMods: ["alecs-animal-husbandry"],
+      contentSearchEnabled: true,
+      contentResultsByMod: {
+        "alecs-animal-husbandry": [
+          {
+            slug: "beast-command-flute",
+            title: "Beast Command Flute",
+            url: "https://wiki.hytalemodding.dev/mod/alecs-animal-husbandry/beast-command-flute",
+            snippet: "Use this to command tamed beasts to move and guard."
+          }
+        ]
+      }
+    });
+
+    const result = await service.lookup({
+      guildId: "1",
+      userId: "2",
+      query: "command tame beast"
+    });
+
+    expect(result.status).toBe("did_you_mean");
+    expect(result.resolvedUrl).toBe("https://wiki.hytalemodding.dev/mod/alecs-animal-husbandry/beast-command-flute");
+    expect(result.explanation).toContain("Matched page content");
+  });
+
+  it("falls back to cached lookup when content search API fails", async () => {
+    const service = createLookupService({
+      aliasMap: {},
+      defaultMods: ["alecs-animal-husbandry"],
+      contentSearchEnabled: true,
+      contentSearchThrows: true
+    });
+
+    const result = await service.lookup({
+      guildId: "1",
+      userId: "2",
+      query: "beast taming"
+    });
+
+    expect(result.status).toBe("did_you_mean");
+    expect(result.resolvedUrl).toContain("beast-taming-reference");
   });
 });

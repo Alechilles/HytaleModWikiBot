@@ -1,11 +1,37 @@
 import { z } from "zod";
 
+const booleanFromEnv = z.preprocess((value) => {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+
+    if (["0", "false", "no", "off", ""].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return value;
+}, z.boolean());
+
+const optionalNonEmptyString = z.preprocess((value) => {
+  if (typeof value === "string" && value.trim() === "") {
+    return undefined;
+  }
+
+  return value;
+}, z.string().min(1).optional());
+
 const configSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_APPLICATION_ID: z.string().min(1),
   DISCORD_GUILD_ID: z.string().min(1).optional(),
   DATABASE_URL: z.string().url(),
   WIKI_BASE_URL: z.string().url().default("https://wiki.hytalemodding.dev"),
+  WIKI_API_KEY: optionalNonEmptyString,
+  WIKI_CONTENT_SEARCH_ENABLED: booleanFromEnv.default(false),
+  WIKI_CONTENT_SEARCH_LIMIT: z.coerce.number().int().min(1).max(25).default(10),
   WIKI_REFRESH_CRON: z.string().default("0 3 * * *"),
   LOOKUP_STALE_HOURS: z.coerce.number().int().positive().default(24),
   LOOKUP_SIMILARITY_THRESHOLD: z.coerce.number().min(0).max(1).default(0.58),

@@ -26,7 +26,12 @@ async function main() {
   const guildSettingsRepo = new GuildSettingsRepository(pool);
   const queryLogRepo = new QueryLogRepository(pool);
 
-  const wikiClient = new WikiClient(config.WIKI_BASE_URL);
+  const wikiClient = new WikiClient(config.WIKI_BASE_URL, config.WIKI_API_KEY);
+  const contentSearchEnabled = config.WIKI_CONTENT_SEARCH_ENABLED && Boolean(config.WIKI_API_KEY);
+  if (config.WIKI_CONTENT_SEARCH_ENABLED && !contentSearchEnabled) {
+    logger.warn("WIKI_CONTENT_SEARCH_ENABLED=true but WIKI_API_KEY is missing; content search is disabled");
+  }
+
   const wikiIndexer = new WikiIndexer(cacheRepo, wikiClient, logger, config.LOOKUP_STALE_HOURS);
   const lookupService = new WikiLookupService(
     aliasRepo,
@@ -35,7 +40,9 @@ async function main() {
     wikiIndexer,
     wikiClient,
     config.LOOKUP_SIMILARITY_THRESHOLD,
-    logger
+    logger,
+    contentSearchEnabled,
+    config.WIKI_CONTENT_SEARCH_LIMIT
   );
   const autocompleteService = new WikiAutocompleteService(aliasRepo, cacheRepo, guildSettingsRepo, lookupService);
 
