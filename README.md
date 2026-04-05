@@ -2,6 +2,11 @@
 
 Discord bot for `wiki.hytalemodding.dev` with guild-scoped aliases and slash-command wiki lookup.
 
+## Legal
+
+- Terms of Service: [TERMS_OF_SERVICE.md](./TERMS_OF_SERVICE.md)
+- Privacy Policy: [PRIVACY_POLICY.md](./PRIVACY_POLICY.md)
+
 ## Implemented Features
 
 - `/wiki query mod public`
