@@ -48,6 +48,52 @@ describe("CrashTelemetryRelay internals", () => {
     expect(message.attachmentJson).toBe(rawJson);
   });
 
+  it("accepts full Tamework crash payloads with extra fields", () => {
+    const payload = {
+      schemaVersion: 1,
+      reportId: "abc123",
+      source: "uncaught_exception",
+      fingerprint: "deadbeef",
+      capturedAtUtc: "2026-04-05T20:00:00Z",
+      pluginIdentifier: "Alechilles:Alec's Tamework!",
+      pluginVersion: "2.7.3",
+      threadName: "WorldThread",
+      worldName: "TempleTest",
+      worldRemovalReason: "EXCEPTIONAL",
+      worldFailurePluginIdentifier: "Alechilles:Alec's Tamework!",
+      attribution: {
+        identifiedPlugin: "Alechilles:Alec's Tamework!",
+        matchedPluginIdentifier: true,
+        matchedStackPrefix: true
+      },
+      throwable: {
+        type: "java.lang.IllegalStateException",
+        message: "Unexpected state",
+        stack: [
+          "com.alechilles.alecstamework.SomeClass.method(SomeClass.java:42)",
+          "com.hypixel.hytale.server.core.universe.world.World.tick(World.java:451)"
+        ],
+        causes: [
+          {
+            type: "java.lang.RuntimeException",
+            message: "inner",
+            stack: ["com.alechilles.alecstamework.Inner.run(Inner.java:7)"]
+          }
+        ]
+      },
+      runtime: {
+        javaVersion: "21",
+        runtimeVersion: "21.0.6+8",
+        osName: "Linux",
+        osVersion: "6.12",
+        osArch: "amd64"
+      }
+    };
+
+    const result = crashRelayInternals.crashReportSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+
   it("authorizes bearer and x-api-key headers", () => {
     const expected = "secret-token";
 

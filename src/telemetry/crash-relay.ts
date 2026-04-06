@@ -13,6 +13,7 @@ const crashThrowableSchema = z
     message: z.string().trim().min(1).max(2_000).optional(),
     stack: z.array(z.string().max(1_000)).max(200).optional()
   })
+  .passthrough()
   .optional();
 
 const crashReportSchema = z
@@ -29,7 +30,7 @@ const crashReportSchema = z
     worldFailurePluginIdentifier: z.string().trim().min(1).max(200).nullable().optional(),
     throwable: crashThrowableSchema
   })
-  .strict()
+  .passthrough()
   .refine(
     (value) =>
       Boolean(
@@ -663,6 +664,7 @@ function takeWindowedRateLimit(
 
 export const crashRelayInternals = {
   buildCrashRelayMessage,
+  crashReportSchema,
   isAuthorized,
   normalizeRelayPath,
   extractPathname,
