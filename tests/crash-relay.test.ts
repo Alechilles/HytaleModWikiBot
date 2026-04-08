@@ -158,6 +158,17 @@ describe("CrashTelemetryRelay internals", () => {
     expect(derivedOne).toBe(derivedTwo);
   });
 
+  it("builds bounded fingerprint thread names", () => {
+    const name = crashRelayInternals.buildFingerprintThreadName(
+      "DEAD-BEEF_1234567890",
+      "java.lang.IllegalStateException: Unexpected world thread state"
+    );
+
+    expect(name).toContain("crash-");
+    expect(name).toContain("dead-beef_1234567890");
+    expect(name.length).toBeLessThanOrEqual(100);
+  });
+
   it("enforces windowed rate limits", () => {
     const counters = new Map<string, { count: number; resetAtMs: number }>();
     const now = 1_000;

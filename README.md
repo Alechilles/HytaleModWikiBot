@@ -141,6 +141,7 @@ Payload handling notes:
   - max-body enforcement
   - per-IP and global rate limits
   - duplicate-fingerprint suppression with summary messages
+  - per-fingerprint Discord threads with database-backed thread reuse across bot restarts
   - optional IP/fingerprint blocklists
 - Non-2xx processing outcomes return failure status so Tamework keeps reports queued for retry.
 

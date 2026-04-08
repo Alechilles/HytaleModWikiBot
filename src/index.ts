@@ -5,6 +5,7 @@ import { createLogger } from "./logger.js";
 import { createPool } from "./db/pool.js";
 import { AliasRepository } from "./db/repositories/alias-repo.js";
 import { CacheRepository } from "./db/repositories/cache-repo.js";
+import { CrashThreadRepository } from "./db/repositories/crash-thread-repo.js";
 import { GuildSettingsRepository } from "./db/repositories/guild-settings-repo.js";
 import { QueryLogRepository } from "./db/repositories/query-log-repo.js";
 import { WikiClient } from "./services/wiki-client.js";
@@ -24,6 +25,7 @@ async function main() {
 
   const aliasRepo = new AliasRepository(pool);
   const cacheRepo = new CacheRepository(pool);
+  const crashThreadRepo = new CrashThreadRepository(pool);
   const guildSettingsRepo = new GuildSettingsRepository(pool);
   const queryLogRepo = new QueryLogRepository(pool);
 
@@ -64,7 +66,8 @@ async function main() {
   const crashRelay = new CrashTelemetryRelay({
     config,
     logger,
-    bot
+    bot,
+    crashThreadRepo
   });
 
   cron.schedule(config.WIKI_REFRESH_CRON, () => {

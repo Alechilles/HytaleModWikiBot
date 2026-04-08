@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   ChatInputCommandInteraction,
   Client,
   GatewayIntentBits,
@@ -30,6 +31,12 @@ interface BotDependencies {
   autocompleteService: WikiAutocompleteService;
   rateLimiter: InMemoryRateLimiter;
   buttonTokenStore: ExpiringTokenStore<ButtonPayload>;
+}
+
+interface SendableMessageParams {
+  content: string;
+  attachmentJson?: string;
+  attachmentName?: string;
 }
 
 export class WikiBot {
@@ -68,6 +75,60 @@ export class WikiBot {
       throw new Error(`Channel ${params.channelId} is not a text-capable Discord channel.`);
     }
 
+    await channel.send(this.buildSendPayload(params));
+  }
+
+  public async createCrashThread(params: {
+    channelId: string;
+    threadName: string;
+    openerContent: string;
+  }): Promise<{ threadId: string }> {
+    const channel = await this.client.channels.fetch(params.channelId);
+    if (
+      !channel ||
+      (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement) ||
+      !channel.isSendable() ||
+      !("threads" in channel)
+    ) {
+      throw new Error(`Channel ${params.channelId} cannot create text threads.`);
+    }
+
+    const openerMessage = await channel.send({ content: params.openerContent });
+    const thread = await channel.threads.create({
+      name: params.threadName,
+      startMessage: openerMessage.id,
+      reason: "Crash telemetry fingerprint thread"
+    });
+
+    return { threadId: thread.id };
+  }
+
+  public async sendMessageToThread(params: {
+    threadId: string;
+    content: string;
+    attachmentJson?: string;
+    attachmentName?: string;
+  }): Promise<void> {
+    const thread = await this.client.channels.fetch(params.threadId);
+    if (!thread || !thread.isThread() || !thread.isTextBased()) {
+      throw new Error(`Thread ${params.threadId} is not a text thread channel.`);
+    }
+
+    if (thread.archived) {
+      await thread.setArchived(false, "Crash telemetry thread reopen");
+    }
+
+    if (!thread.isSendable()) {
+      throw new Error(`Thread ${params.threadId} is not sendable.`);
+    }
+
+    await thread.send(this.buildSendPayload(params));
+  }
+
+  private buildSendPayload(params: SendableMessageParams): {
+    content: string;
+    files?: Array<{ attachment: Buffer; name: string }>;
+  } {
     const payload: {
       content: string;
       files?: Array<{ attachment: Buffer; name: string }>;
@@ -84,7 +145,7 @@ export class WikiBot {
       ];
     }
 
-    await channel.send(payload);
+    return payload;
   }
 
   private async handleInteraction(interaction: Interaction): Promise<void> {

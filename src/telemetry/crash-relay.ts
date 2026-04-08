@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { WikiBot } from "../discord/bot.js";
+import type { CrashThreadRepository } from "../db/repositories/crash-thread-repo.js";
 import { shortHash } from "../utils.js";
 
 const GLOBAL_LIMIT_KEY = "__global__";
@@ -48,6 +49,7 @@ interface CrashRelayDependencies {
   config: AppConfig;
   logger: Logger;
   bot: WikiBot;
+  crashThreadRepo: CrashThreadRepository;
 }
 
 interface CrashRelayMessage {
@@ -280,19 +282,12 @@ export class CrashTelemetryRelay {
           : {})
       });
 
-      await this.deps.bot.sendMessageToChannel(
-        message.attachmentJson
-          ? {
-              channelId,
-              content: message.content,
-              attachmentJson: message.attachmentJson,
-              attachmentName: message.attachmentName ?? "tamework-crash-report.json"
-            }
-          : {
-              channelId,
-              content: message.content
-            }
-      );
+      await this.postToFingerprintThread({
+        channelId,
+        fingerprint,
+        throwableType: fallback(parsed.throwable?.type, "unknown"),
+        message
+      });
 
       writeJson(response, 202, { ok: true, fingerprint });
     } catch (error) {
@@ -316,6 +311,129 @@ export class CrashTelemetryRelay {
       );
       writeJson(response, 500, { error: "relay_failed" });
     }
+  }
+
+  private async postToFingerprintThread(params: {
+    channelId: string;
+    fingerprint: string;
+    throwableType: string;
+    message: CrashRelayMessage;
+  }): Promise<void> {
+    const destination = await this.resolveOrCreateFingerprintThreadId({
+      channelId: params.channelId,
+      fingerprint: params.fingerprint,
+      throwableType: params.throwableType
+    });
+
+    const sent = await this.tryPostMessageToThread(destination.threadId, params.message, {
+      fingerprint: params.fingerprint,
+      scope: destination.created ? "new" : "existing"
+    });
+    if (sent) {
+      return;
+    }
+
+    const replacementThreadId = await this.createAndPersistFingerprintThread({
+      channelId: params.channelId,
+      fingerprint: params.fingerprint,
+      throwableType: params.throwableType,
+      reasonSuffix: `replace ${destination.threadId}`
+    });
+
+    await this.deps.bot.sendMessageToThread(
+      params.message.attachmentJson
+        ? {
+            threadId: replacementThreadId,
+            content: params.message.content,
+            attachmentJson: params.message.attachmentJson,
+            attachmentName: params.message.attachmentName ?? "tamework-crash-report.json"
+          }
+        : {
+            threadId: replacementThreadId,
+            content: params.message.content
+          }
+    );
+  }
+
+  private async tryPostMessageToThread(
+    threadId: string,
+    message: CrashRelayMessage,
+    context: { fingerprint: string; scope: "existing" | "new" }
+  ): Promise<boolean> {
+    try {
+      await this.deps.bot.sendMessageToThread(
+        message.attachmentJson
+          ? {
+              threadId,
+              content: message.content,
+              attachmentJson: message.attachmentJson,
+              attachmentName: message.attachmentName ?? "tamework-crash-report.json"
+            }
+          : {
+              threadId,
+              content: message.content
+            }
+      );
+      return true;
+    } catch (error) {
+      this.deps.logger.warn(
+        {
+          err: error,
+          scope: context.scope,
+          threadId,
+          fingerprint: context.fingerprint
+        },
+        "Failed to post crash relay message to fingerprint thread"
+      );
+      return false;
+    }
+  }
+
+  private async resolveOrCreateFingerprintThreadId(params: {
+    channelId: string;
+    fingerprint: string;
+    throwableType: string;
+  }): Promise<{ threadId: string; created: boolean }> {
+    const mappedThreadId = await this.deps.crashThreadRepo.getThreadId(params.channelId, params.fingerprint);
+    if (mappedThreadId) {
+      return { threadId: mappedThreadId, created: false };
+    }
+
+    const threadId = await this.createAndPersistFingerprintThread({
+      channelId: params.channelId,
+      fingerprint: params.fingerprint,
+      throwableType: params.throwableType,
+      reasonSuffix: "new"
+    });
+
+    return { threadId, created: true };
+  }
+
+  private async createAndPersistFingerprintThread(params: {
+    channelId: string;
+    fingerprint: string;
+    throwableType: string;
+    reasonSuffix: string;
+  }): Promise<string> {
+    const threadName = buildFingerprintThreadName(params.fingerprint, params.throwableType);
+    const openerContent = buildThreadOpenerMessage(params.fingerprint, params.throwableType);
+    const created = await this.deps.bot.createCrashThread({
+      channelId: params.channelId,
+      threadName,
+      openerContent
+    });
+
+    await this.deps.crashThreadRepo.upsertThreadId(params.channelId, params.fingerprint, created.threadId);
+    this.deps.logger.info(
+      {
+        channelId: params.channelId,
+        threadId: created.threadId,
+        fingerprint: params.fingerprint,
+        reason: params.reasonSuffix
+      },
+      "Upserted crash fingerprint thread mapping"
+    );
+    return created.threadId;
   }
 
   private registerFingerprintObservation(
@@ -393,7 +511,12 @@ export class CrashTelemetryRelay {
       `throwable: \`${safeInline(state.throwableType)}\``;
 
     try {
-      await this.deps.bot.sendMessageToChannel({ channelId, content });
+      await this.postToFingerprintThread({
+        channelId,
+        fingerprint: state.fingerprint,
+        throwableType: state.throwableType,
+        message: { content }
+      });
       this.deps.logger.info(
         {
           fingerprint: state.fingerprint,
@@ -412,6 +535,23 @@ export class CrashTelemetryRelay {
       return false;
     }
   }
+}
+
+function buildFingerprintThreadName(fingerprint: string, throwableType: string): string {
+  const fingerprintToken = safeFileToken(fingerprint.toLowerCase()).slice(0, 32) || "unknown";
+  const throwableToken = safeThreadToken(throwableType).slice(0, 60);
+  const baseName = throwableToken
+    ? `crash-${fingerprintToken}-${throwableToken}`
+    : `crash-${fingerprintToken}`;
+  return truncate(baseName, 100);
+}
+
+function buildThreadOpenerMessage(fingerprint: string, throwableType: string): string {
+  return [
+    "Crash fingerprint thread created.",
+    `fingerprint: \`${safeInline(fingerprint)}\``,
+    `throwable: \`${safeInline(throwableType || "unknown")}\``
+  ].join("\n");
 }
 
 function buildCrashRelayMessage(
@@ -539,6 +679,15 @@ function safeFileToken(value: string): string {
   return normalized.length > 0 ? normalized : "unknown";
 }
 
+function safeThreadToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 function stripCodeFence(value: string): string {
   return value.replace(/```/g, "``'");
 }
@@ -664,6 +813,7 @@ function takeWindowedRateLimit(
 
 export const crashRelayInternals = {
   buildCrashRelayMessage,
+  buildFingerprintThreadName,
   crashReportSchema,
   isAuthorized,
   normalizeRelayPath,
