@@ -9,7 +9,7 @@ Discord bot for `wiki.hytalemodding.dev` with guild-scoped aliases and slash-com
 
 ## Implemented Features
 
-- `/wiki query mod public`
+- `/wiki query mod public at`
 - `/wiki-alias set/remove/list`
 - `/wiki-default add/remove/list/set/clear`
 - `/wiki-config visibility`

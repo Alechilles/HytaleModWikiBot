@@ -28,6 +28,12 @@ export const wikiCommand = new SlashCommandBuilder()
       .setDescription("Set true to post publicly in channel")
       .setRequired(false)
   )
+  .addUserOption((option) =>
+    option
+      .setName("at")
+      .setDescription("Optional user to mention in the response")
+      .setRequired(false)
+  )
   .setContexts(InteractionContextType.Guild)
   .setIntegrationTypes(ApplicationIntegrationType.GuildInstall);
 

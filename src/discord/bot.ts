@@ -280,7 +280,13 @@ export class WikiBot {
     const visibilityMode = await this.deps.guildSettingsRepo.getVisibilityMode(interaction.guildId);
     const embedMode = await this.deps.guildSettingsRepo.getEmbedMode(interaction.guildId);
     const publicOption = interaction.options.getBoolean("public");
-    const isPublic = publicOption ?? visibilityMode === "public";
+    const mentionTarget = interaction.options.getUser("at");
+    const mentionTargetId = mentionTarget?.id;
+    const isPublic = resolveWikiResponseVisibility({
+      visibilityMode,
+      publicOption,
+      mentionTargetId
+    });
     const suppressEmbeds = embedMode === "disabled";
 
     await interaction.deferReply({ ephemeral: !isPublic });
@@ -310,11 +316,16 @@ export class WikiBot {
     const replyOptions: {
       content: string;
       components: ActionRowBuilder<ButtonBuilder>[];
+      allowedMentions?: { users: string[] };
       flags?: MessageFlags.SuppressEmbeds;
     } = {
-      content: response.content,
+      content: applyWikiMentionTarget(response.content, mentionTargetId),
       components: response.components
     };
+
+    if (mentionTargetId) {
+      replyOptions.allowedMentions = { users: [mentionTargetId] };
+    }
 
     if (suppressEmbeds) {
       replyOptions.flags = MessageFlags.SuppressEmbeds;
@@ -753,3 +764,28 @@ export class WikiBot {
     return `[${safeTitle}](${url})`;
   }
 }
+
+function resolveWikiResponseVisibility(params: {
+  visibilityMode: VisibilityMode;
+  publicOption: boolean | null;
+  mentionTargetId: string | undefined;
+}): boolean {
+  if (params.mentionTargetId) {
+    return true;
+  }
+
+  return params.publicOption ?? params.visibilityMode === "public";
+}
+
+function applyWikiMentionTarget(content: string, mentionTargetId?: string): string {
+  if (!mentionTargetId) {
+    return content;
+  }
+
+  return `<@${mentionTargetId}>\n${content}`;
+}
+
+export const wikiBotInternals = {
+  resolveWikiResponseVisibility,
+  applyWikiMentionTarget
+};
