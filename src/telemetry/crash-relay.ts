@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AppConfig } from "../config.js";
+import { TelemetryProjectRepository } from "../db/repositories/telemetry-project-repo.js";
+import { TelemetryReportRepository } from "../db/repositories/telemetry-report-repo.js";
 import type { Logger } from "../logger.js";
 import type { WikiBot } from "../discord/bot.js";
 import type { CrashThreadRepository } from "../db/repositories/crash-thread-repo.js";
@@ -14,6 +16,8 @@ interface CrashRelayDependencies {
   logger: Logger;
   bot: WikiBot;
   crashThreadRepo: CrashThreadRepository;
+  telemetryProjectRepo: TelemetryProjectRepository;
+  telemetryReportRepo: TelemetryReportRepository;
 }
 
 interface CrashRelayMessage {
@@ -94,7 +98,8 @@ export class CrashTelemetryRelay {
       : null;
 
     const legacyConfigured = Boolean(this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID);
-    const projectsConfigured = (this.projectRegistry?.size() ?? 0) > 0;
+    const dbProjectCount = await this.deps.telemetryProjectRepo.countProjects();
+    const projectsConfigured = dbProjectCount > 0 || (this.projectRegistry?.size() ?? 0) > 0;
     if (!legacyConfigured && !projectsConfigured) {
       throw new Error(
         "Crash relay requires either legacy channel config or a CRASH_RELAY_PROJECTS_FILE project registry."
@@ -141,8 +146,9 @@ export class CrashTelemetryRelay {
         legacyChannelId: this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID,
         authTokenConfigured: Boolean(this.deps.config.CRASH_RELAY_AUTH_TOKEN),
         projectRegistryConfigured: projectsConfigured,
-        projectCount: this.projectRegistry?.size() ?? 0,
-        enabledProjectCount: this.projectRegistry?.enabledProjectCount() ?? 0,
+        dbProjectCount,
+        fileProjectCount: this.projectRegistry?.size() ?? 0,
+        enabledProjectCount: dbProjectCount > 0 ? dbProjectCount : (this.projectRegistry?.enabledProjectCount() ?? 0),
         blockedIpCount: this.blockedIps.size,
         blockedFingerprintCount: this.blockedFingerprints.size
       },
@@ -371,7 +377,9 @@ export class CrashTelemetryRelay {
       return;
     }
 
-    const project = this.projectRegistry?.findByProjectKey(projectKey) ?? null;
+    const project = (await this.deps.telemetryProjectRepo.resolveHostedProjectByKey(projectKey))
+      ?? this.projectRegistry?.findByProjectKey(projectKey)
+      ?? null;
     if (!project) {
       writeJson(response, 403, { error: "unknown_project_key" });
       return;
@@ -433,6 +441,14 @@ export class CrashTelemetryRelay {
       const target = this.projectTarget(project);
       const duplicateDecision = this.registerFingerprintObservation(fingerprint, parsed, Date.now(), target);
       if (!duplicateDecision.shouldPostNow) {
+        await this.deps.telemetryReportRepo.recordAcceptedReport({
+          projectId: target.projectId,
+          envelope: parsed,
+          fingerprint,
+          rawJson: rawBody,
+          alertSuppressed: true,
+          alertDispatched: false
+        });
         writeJson(response, 202, {
           ok: true,
           suppressed: true,
@@ -457,6 +473,15 @@ export class CrashTelemetryRelay {
         fingerprint,
         throwableType: fallback(parsed.throwable?.type, "unknown"),
         message
+      });
+
+      await this.deps.telemetryReportRepo.recordAcceptedReport({
+        projectId: target.projectId,
+        envelope: parsed,
+        fingerprint,
+        rawJson: rawBody,
+        alertSuppressed: false,
+        alertDispatched: true
       });
 
       writeJson(response, 202, {
