@@ -394,8 +394,11 @@ export class TelemetryPortalServer {
       return null;
     }
     if (context.memberships.length === 0) {
-      redirect(response, `${this.basePath}/login?error=no-project-access`);
-      return null;
+      const projectCount = await this.deps.telemetryProjectRepo.countProjects();
+      if (projectCount > 0) {
+        redirect(response, `${this.basePath}/login?error=no-project-access`);
+        return null;
+      }
     }
     return context;
   }
@@ -459,7 +462,8 @@ export class TelemetryPortalServer {
   }
 
   private async handleCreateProject(request: IncomingMessage, response: ServerResponse, context: AuthenticatedContext): Promise<void> {
-    const globalAdmin = context.memberships.some((membership) => ADMIN_ROLES.includes(membership.role));
+    const existingProjectCount = await this.deps.telemetryProjectRepo.countProjects();
+    const globalAdmin = existingProjectCount == 0 || context.memberships.some((membership) => ADMIN_ROLES.includes(membership.role));
     if (!globalAdmin) {
       writeText(response, 403, "Creating projects requires owner or admin access on an existing project.");
       return;
