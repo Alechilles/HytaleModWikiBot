@@ -61,6 +61,12 @@ const configSchema = z.object({
   CRASH_RELAY_SUMMARY_INTERVAL_SECONDS: z.coerce.number().int().min(5).default(30),
   CRASH_RELAY_BLOCKED_IPS: optionalNonEmptyString,
   CRASH_RELAY_BLOCKED_FINGERPRINTS: optionalNonEmptyString,
+  TELEMETRY_PORTAL_ENABLED: booleanFromEnv.default(false),
+  TELEMETRY_PORTAL_BIND_HOST: z.string().default("127.0.0.1"),
+  TELEMETRY_PORTAL_PORT: z.coerce.number().int().min(1).max(65535).default(8788),
+  TELEMETRY_PORTAL_BASE_PATH: z.string().default("/portal"),
+  TELEMETRY_PORTAL_ADMIN_TOKEN: optionalNonEmptyString,
+  TELEMETRY_PORTAL_SESSION_SECRET: optionalNonEmptyString,
   LOG_LEVEL: z.string().default("info")
 });
 
