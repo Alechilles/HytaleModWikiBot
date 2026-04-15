@@ -32,6 +32,7 @@ jobs:
       - name: Sync Files To VPS
         run: |
           rsync -az --delete \
+            --filter 'P config/crash-projects.json' \
             --exclude '.git/' \
             --exclude '.github/' \
             --exclude '.idea/' \
