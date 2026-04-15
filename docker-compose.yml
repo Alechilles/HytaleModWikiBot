@@ -18,6 +18,7 @@ services:
       - postgres
     ports:
       - "${CRASH_RELAY_BIND_HOST:-0.0.0.0}:${CRASH_RELAY_PORT:-8787}:${CRASH_RELAY_PORT:-8787}"
+      - "${TELEMETRY_PORTAL_BIND_HOST:-127.0.0.1}:${TELEMETRY_PORTAL_PORT:-8788}:${TELEMETRY_PORTAL_PORT:-8788}"
     env_file:
       - .env
     environment:
