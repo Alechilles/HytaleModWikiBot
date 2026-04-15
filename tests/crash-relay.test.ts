@@ -6,7 +6,7 @@ describe("CrashTelemetryRelay internals", () => {
     expect(crashRelayInternals.normalizeRelayPath("/tamework/crash-report")).toBe("/tamework/crash-report");
     expect(crashRelayInternals.normalizeRelayPath("tamework/crash-report")).toBe("/tamework/crash-report");
     expect(crashRelayInternals.normalizeRelayPath("   ")).toBe("/tamework/crash-report");
-    expect(crashRelayInternals.normalizeProjectsRelayPath("   ")).toBe("/api/v1/ingest/crash");
+    expect(crashRelayInternals.normalizeProjectsRelayPath("   ")).toBe("/ingest/crash");
   });
 
   it("extracts URL pathnames safely", () => {

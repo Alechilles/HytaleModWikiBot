@@ -45,7 +45,7 @@ const configSchema = z.object({
   CRASH_RELAY_BIND_HOST: z.string().default("0.0.0.0"),
   CRASH_RELAY_PORT: z.coerce.number().int().min(1).max(65535).default(8787),
   CRASH_RELAY_PATH: z.string().default("/tamework/crash-report"),
-  CRASH_RELAY_PROJECTS_PATH: z.string().default("/api/v1/ingest/crash"),
+  CRASH_RELAY_PROJECTS_PATH: z.string().default("/ingest/crash"),
   CRASH_RELAY_PROJECTS_FILE: optionalNonEmptyString,
   CRASH_RELAY_AUTH_TOKEN: optionalNonEmptyString,
   CRASH_RELAY_DISCORD_CHANNEL_ID: optionalNonEmptyString,
