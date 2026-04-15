@@ -48,6 +48,10 @@ export interface TelemetryGroupRow {
   latestAlertDispatched: boolean;
 }
 
+export interface TelemetryReportDetail extends TelemetryReportRow {
+  rawJson: string;
+}
+
 export interface TelemetryProjectMetrics {
   reports24h: number;
   reports7d: number;
@@ -317,6 +321,102 @@ export class TelemetryReportRepository {
       latestAlertSuppressed: row.latest_alert_suppressed,
       latestAlertDispatched: row.latest_alert_dispatched
     }));
+  }
+
+  public async getReportById(projectId: string, reportId: string): Promise<TelemetryReportDetail | null> {
+    const result = await this.pool.query(
+      `
+      SELECT
+        id,
+        project_id,
+        report_id,
+        fingerprint,
+        source,
+        received_at,
+        captured_at,
+        last_captured_at,
+        occurrence_count,
+        plugin_identifier,
+        plugin_version,
+        exception_type,
+        exception_message,
+        world_name,
+        hytale_build,
+        server_version,
+        alert_suppressed,
+        alert_dispatched,
+        raw_json::text AS raw_json
+      FROM telemetry_crash_reports
+      WHERE project_id = $1 AND report_id = $2
+      ORDER BY received_at DESC
+      LIMIT 1
+      `,
+      [projectId, reportId]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      id: Number(row.id),
+      projectId: row.project_id,
+      reportId: row.report_id,
+      fingerprint: row.fingerprint,
+      source: row.source,
+      receivedAt: toIso(row.received_at) ?? new Date(0).toISOString(),
+      capturedAt: toIso(row.captured_at),
+      lastCapturedAt: toIso(row.last_captured_at),
+      occurrenceCount: row.occurrence_count,
+      pluginIdentifier: row.plugin_identifier,
+      pluginVersion: row.plugin_version,
+      exceptionType: row.exception_type,
+      exceptionMessage: row.exception_message,
+      worldName: row.world_name,
+      hytaleBuild: row.hytale_build,
+      serverVersion: row.server_version,
+      alertSuppressed: row.alert_suppressed,
+      alertDispatched: row.alert_dispatched,
+      rawJson: row.raw_json
+    };
+  }
+
+  public async getCrashGroup(projectId: string, fingerprint: string): Promise<TelemetryGroupRow | null> {
+    const result = await this.pool.query(
+      `
+      SELECT
+        project_id,
+        fingerprint,
+        first_seen_at,
+        last_seen_at,
+        occurrence_count,
+        latest_exception_type,
+        latest_exception_message,
+        latest_plugin_version,
+        latest_source,
+        latest_alert_suppressed,
+        latest_alert_dispatched
+      FROM telemetry_crash_groups
+      WHERE project_id = $1 AND fingerprint = $2
+      `,
+      [projectId, fingerprint]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      projectId: row.project_id,
+      fingerprint: row.fingerprint,
+      firstSeenAt: toIso(row.first_seen_at) ?? new Date(0).toISOString(),
+      lastSeenAt: toIso(row.last_seen_at) ?? new Date(0).toISOString(),
+      occurrenceCount: Number(row.occurrence_count),
+      latestExceptionType: row.latest_exception_type,
+      latestExceptionMessage: row.latest_exception_message,
+      latestPluginVersion: row.latest_plugin_version,
+      latestSource: row.latest_source,
+      latestAlertSuppressed: row.latest_alert_suppressed,
+      latestAlertDispatched: row.latest_alert_dispatched
+    };
   }
 
   public async getMetrics(projectId: string): Promise<TelemetryProjectMetrics> {

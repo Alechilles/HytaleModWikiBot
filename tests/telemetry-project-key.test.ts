@@ -24,8 +24,13 @@ describe("telemetry project key helpers", () => {
 
   it("creates verifiable portal sessions", () => {
     const secret = signSessionValue("seed", "secret");
-    const session = createPortalSession(secret, 1_000);
-    const cookie = buildSessionCookie(session.value);
+    const session = createPortalSession({
+      discordUserId: "1234567890",
+      username: "Alechilles",
+      secret,
+      nowMs: 1_000
+    });
+    const cookie = buildSessionCookie(session.value, { secure: false, path: "/portal" });
     const parsed = parseCookieHeader(cookie);
 
     expect(verifyPortalSession(parsed.telemetry_portal_session, secret, 1_001)).not.toBeNull();

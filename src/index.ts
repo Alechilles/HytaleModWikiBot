@@ -10,6 +10,8 @@ import { GuildSettingsRepository } from "./db/repositories/guild-settings-repo.j
 import { QueryLogRepository } from "./db/repositories/query-log-repo.js";
 import { TelemetryProjectRepository } from "./db/repositories/telemetry-project-repo.js";
 import { TelemetryReportRepository } from "./db/repositories/telemetry-report-repo.js";
+import { TelemetryMembershipRepository } from "./db/repositories/telemetry-membership-repo.js";
+import { TelemetryAuditLogRepository } from "./db/repositories/telemetry-audit-log-repo.js";
 import { WikiClient } from "./services/wiki-client.js";
 import { WikiIndexer } from "./services/wiki-indexer.js";
 import { WikiLookupService } from "./services/wiki-lookup.js";
@@ -33,6 +35,8 @@ async function main() {
   const queryLogRepo = new QueryLogRepository(pool);
   const telemetryProjectRepo = new TelemetryProjectRepository(pool);
   const telemetryReportRepo = new TelemetryReportRepository(pool);
+  const telemetryMembershipRepo = new TelemetryMembershipRepository(pool);
+  const telemetryAuditLogRepo = new TelemetryAuditLogRepository(pool);
 
   const wikiClient = new WikiClient(config.WIKI_BASE_URL, config.WIKI_API_KEY);
   const contentSearchEnabled = config.WIKI_CONTENT_SEARCH_ENABLED && Boolean(config.WIKI_API_KEY);
@@ -80,7 +84,9 @@ async function main() {
     config,
     logger,
     telemetryProjectRepo,
-    telemetryReportRepo
+    telemetryReportRepo,
+    telemetryMembershipRepo,
+    telemetryAuditLogRepo
   });
 
   cron.schedule(config.WIKI_REFRESH_CRON, () => {

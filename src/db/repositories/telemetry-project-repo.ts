@@ -79,6 +79,39 @@ export class TelemetryProjectRepository {
     return result.rows.map((row) => this.mapProjectRow(row));
   }
 
+  public async listProjectsByIds(projectIds: string[]): Promise<TelemetryProjectSummary[]> {
+    if (projectIds.length === 0) {
+      return [];
+    }
+    const result = await this.pool.query(
+      `
+      SELECT
+        p.project_id,
+        p.display_name,
+        p.enabled,
+        p.rate_limit_per_minute,
+        p.max_payload_bytes,
+        p.fingerprint_cooldown_seconds,
+        p.attach_json,
+        p.stack_lines,
+        p.created_at,
+        p.updated_at,
+        r.guild_id,
+        r.channel_id,
+        r.mention_role_id,
+        k.key_prefix,
+        k.key_suffix
+      FROM telemetry_projects p
+      LEFT JOIN telemetry_project_discord_routes r ON r.project_id = p.project_id
+      LEFT JOIN telemetry_project_keys k ON k.project_id = p.project_id AND k.active = true
+      WHERE p.project_id = ANY($1::text[])
+      ORDER BY p.display_name ASC, p.project_id ASC
+      `,
+      [projectIds]
+    );
+    return result.rows.map((row) => this.mapProjectRow(row));
+  }
+
   public async getProject(projectId: string): Promise<TelemetryProjectDetail | null> {
     const result = await this.pool.query(
       `
