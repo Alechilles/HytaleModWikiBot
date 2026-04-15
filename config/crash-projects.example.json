@@ -1,0 +1,20 @@
+{
+  "projects": [
+    {
+      "projectId": "alecs-tamework",
+      "displayName": "Alec's Tamework!",
+      "publicProjectKey": "replace_with_public_project_key",
+      "enabled": true,
+      "rateLimitPerMinute": 60,
+      "maxPayloadBytes": 262144,
+      "fingerprintCooldownSeconds": 300,
+      "attachJson": true,
+      "stackLines": 8,
+      "discord": {
+        "channelId": "replace_with_channel_id",
+        "guildId": "replace_with_guild_id",
+        "mentionRoleId": ""
+      }
+    }
+  ]
+}

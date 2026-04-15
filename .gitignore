@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
+dev.env
+config/crash-projects.json
 coverage/
 *.log
 .idea/

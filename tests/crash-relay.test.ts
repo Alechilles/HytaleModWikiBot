@@ -36,6 +36,8 @@ describe("CrashTelemetryRelay internals", () => {
 
     const rawJson = JSON.stringify(envelope);
     const message = crashRelayInternals.buildCrashRelayMessage(envelope, rawJson, {
+      title: "Tamework crash report received.",
+      attachmentPrefix: "tamework-crash",
       mentionRoleId: "1234",
       includeJsonAttachment: true,
       stackLines: 2
@@ -51,10 +53,15 @@ describe("CrashTelemetryRelay internals", () => {
   it("accepts full Tamework crash payloads with extra fields", () => {
     const payload = {
       schemaVersion: 1,
+      eventType: "crash",
       reportId: "abc123",
+      projectId: "alecs-tamework",
+      projectDisplayName: "Alec's Tamework!",
       source: "uncaught_exception",
       fingerprint: "deadbeef",
       capturedAtUtc: "2026-04-05T20:00:00Z",
+      lastCapturedAtUtc: "2026-04-05T20:01:00Z",
+      occurrenceCount: 2,
       pluginIdentifier: "Alechilles:Alec's Tamework!",
       pluginVersion: "2.7.3",
       threadName: "WorldThread",
@@ -66,6 +73,13 @@ describe("CrashTelemetryRelay internals", () => {
         matchedPluginIdentifier: true,
         matchedStackPrefix: true
       },
+      breadcrumbs: [
+        {
+          atUtc: "2026-04-05T20:00:00Z",
+          category: "telemetry",
+          detail: "Manual test report requested."
+        }
+      ],
       throwable: {
         type: "java.lang.IllegalStateException",
         message: "Unexpected state",
@@ -161,10 +175,12 @@ describe("CrashTelemetryRelay internals", () => {
   it("builds bounded fingerprint thread names", () => {
     const name = crashRelayInternals.buildFingerprintThreadName(
       "DEAD-BEEF_1234567890",
-      "java.lang.IllegalStateException: Unexpected world thread state"
+      "java.lang.IllegalStateException: Unexpected world thread state",
+      "alecs-tamework"
     );
 
     expect(name).toContain("crash-");
+    expect(name).toContain("alecs-tamework");
     expect(name).toContain("dead-beef_1234567890");
     expect(name.length).toBeLessThanOrEqual(100);
   });
