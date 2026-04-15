@@ -46,7 +46,6 @@ const configSchema = z.object({
   CRASH_RELAY_PORT: z.coerce.number().int().min(1).max(65535).default(8787),
   CRASH_RELAY_PATH: z.string().default("/tamework/crash-report"),
   CRASH_RELAY_PROJECTS_PATH: z.string().default("/ingest/crash"),
-  CRASH_RELAY_PROJECTS_FILE: optionalNonEmptyString,
   CRASH_RELAY_AUTH_TOKEN: optionalNonEmptyString,
   CRASH_RELAY_DISCORD_CHANNEL_ID: optionalNonEmptyString,
   CRASH_RELAY_MENTION_ROLE_ID: optionalNonEmptyString,
@@ -65,8 +64,13 @@ const configSchema = z.object({
   TELEMETRY_PORTAL_BIND_HOST: z.string().default("127.0.0.1"),
   TELEMETRY_PORTAL_PORT: z.coerce.number().int().min(1).max(65535).default(8788),
   TELEMETRY_PORTAL_BASE_PATH: z.string().default("/portal"),
-  TELEMETRY_PORTAL_ADMIN_TOKEN: optionalNonEmptyString,
   TELEMETRY_PORTAL_SESSION_SECRET: optionalNonEmptyString,
+  TELEMETRY_PORTAL_COOKIE_SECURE: booleanFromEnv.default(true),
+  TELEMETRY_PORTAL_OAUTH_CLIENT_ID: optionalNonEmptyString,
+  TELEMETRY_PORTAL_OAUTH_CLIENT_SECRET: optionalNonEmptyString,
+  TELEMETRY_PORTAL_OAUTH_REDIRECT_URI: optionalNonEmptyString,
+  TELEMETRY_PORTAL_BOOTSTRAP_OWNER_DISCORD_IDS: optionalNonEmptyString,
+  TELEMETRY_PORTAL_BOOTSTRAP_OWNER_PROJECTS: optionalNonEmptyString,
   LOG_LEVEL: z.string().default("info")
 });
 

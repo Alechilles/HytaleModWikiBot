@@ -62,7 +62,6 @@ cp .env.example .env
   - `CRASH_RELAY_PORT` (default `8787`)
   - `CRASH_RELAY_PATH` (default `/tamework/crash-report`)
   - `CRASH_RELAY_PROJECTS_PATH` (default `/ingest/crash`)
-  - `CRASH_RELAY_PROJECTS_FILE` (server-side hosted project registry JSON)
   - `CRASH_RELAY_AUTH_TOKEN` (shared secret expected in `Authorization: Bearer ...` or `X-API-Key`)
   - `CRASH_RELAY_DISCORD_CHANNEL_ID` (target channel for crash alerts; required when relay enabled)
   - `CRASH_RELAY_MENTION_ROLE_ID` (optional role mention on each alert)
@@ -131,9 +130,8 @@ Two ingress modes are supported:
    - path: `CRASH_RELAY_PATH`
 2. hosted multi-project mode
    - public project keys
-   - server-side per-project routing and limits
+   - database-backed per-project routing and limits
    - path: `CRASH_RELAY_PROJECTS_PATH`
-   - registry file: `CRASH_RELAY_PROJECTS_FILE`
 
 ### Hosted multi-project mode
 
@@ -141,17 +139,15 @@ This is the intended long-term path for Alec's Telemetry consumers.
 
 1. Set these bot env vars:
    - `CRASH_RELAY_ENABLED=true`
-   - `CRASH_RELAY_PROJECTS_FILE=./config/crash-projects.json`
    - optionally adjust `CRASH_RELAY_PROJECTS_PATH`
-2. Create the server-side project registry from the example file:
-   - `config/crash-projects.example.json`
+2. Create hosted projects through the telemetry portal or database-backed admin flow.
 3. For each hosted project, configure:
    - `projectId`
    - `displayName`
    - `publicProjectKey`
    - Discord channel/guild/mention settings
    - server-owned limits like `rateLimitPerMinute`, `maxPayloadBytes`, and `fingerprintCooldownSeconds`
-4. Restart the bot stack:
+4. Restart the bot stack after schema/config changes:
    - `docker compose up -d --build`
 5. Point Alec's Telemetry clients at:
    - `https://<your-vps-domain-or-ip>:<CRASH_RELAY_PORT><CRASH_RELAY_PROJECTS_PATH>`
