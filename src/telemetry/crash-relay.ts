@@ -74,7 +74,7 @@ export class CrashTelemetryRelay {
 
   public constructor(private readonly deps: CrashRelayDependencies) {
     this.legacyPath = normalizeRelayPath(this.deps.config.CRASH_RELAY_PATH);
-    this.projectsPath = normalizeRelayPath(this.deps.config.CRASH_RELAY_PROJECTS_PATH);
+    this.projectsPath = normalizeProjectsRelayPath(this.deps.config.CRASH_RELAY_PROJECTS_PATH);
     this.blockedIps = parseCsvSet(this.deps.config.CRASH_RELAY_BLOCKED_IPS);
     this.blockedFingerprints = parseCsvSet(this.deps.config.CRASH_RELAY_BLOCKED_FINGERPRINTS);
     this.summaryIntervalMs = this.deps.config.CRASH_RELAY_SUMMARY_INTERVAL_SECONDS * 1_000;
@@ -327,22 +327,6 @@ export class CrashTelemetryRelay {
     response: ServerResponse,
     requestPath: string
   ): Promise<void> {
-    const projectKey = extractHeaderValue(request.headers["x-telemetry-project-key"]);
-    if (!projectKey) {
-      writeJson(response, 401, { error: "missing_project_key" });
-      return;
-    }
-
-    const project = this.projectRegistry?.findByProjectKey(projectKey) ?? null;
-    if (!project) {
-      writeJson(response, 403, { error: "unknown_project_key" });
-      return;
-    }
-    if (!project.enabled) {
-      writeJson(response, 403, { error: "project_disabled", projectId: project.projectId });
-      return;
-    }
-
     const normalizedIp = normalizeIp(request.socket.remoteAddress);
     if (this.blockedIps.has(normalizedIp)) {
       writeJson(response, 403, { error: "blocked_ip" });
@@ -358,7 +342,7 @@ export class CrashTelemetryRelay {
     );
     if (!globalDecision.allowed) {
       this.deps.logger.warn(
-        { scope: "global", retryAfterSec: globalDecision.retryAfterSec, projectId: project.projectId },
+        { scope: "global", retryAfterSec: globalDecision.retryAfterSec },
         "Crash telemetry request rate-limited"
       );
       writeRateLimited(response, globalDecision.retryAfterSec, "global");
@@ -374,10 +358,26 @@ export class CrashTelemetryRelay {
     );
     if (!ipDecision.allowed) {
       this.deps.logger.warn(
-        { scope: "ip", ip: normalizedIp, retryAfterSec: ipDecision.retryAfterSec, projectId: project.projectId },
+        { scope: "ip", ip: normalizedIp, retryAfterSec: ipDecision.retryAfterSec },
         "Crash telemetry request rate-limited"
       );
       writeRateLimited(response, ipDecision.retryAfterSec, "ip");
+      return;
+    }
+
+    const projectKey = extractHeaderValue(request.headers["x-telemetry-project-key"]);
+    if (!projectKey) {
+      writeJson(response, 401, { error: "missing_project_key" });
+      return;
+    }
+
+    const project = this.projectRegistry?.findByProjectKey(projectKey) ?? null;
+    if (!project) {
+      writeJson(response, 403, { error: "unknown_project_key" });
+      return;
+    }
+    if (!project.enabled) {
+      writeJson(response, 403, { error: "project_disabled", projectId: project.projectId });
       return;
     }
 
@@ -966,6 +966,15 @@ function normalizeRelayPath(path: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
+function normalizeProjectsRelayPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return "/api/v1/ingest/crash";
+  }
+
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
 function extractPathname(url: string | undefined): string {
   if (!url) {
     return "/";
@@ -1070,6 +1079,7 @@ export const crashRelayInternals = {
   crashReportSchema,
   isAuthorized,
   normalizeRelayPath,
+  normalizeProjectsRelayPath,
   extractPathname,
   parseCsvSet,
   normalizeIp,
