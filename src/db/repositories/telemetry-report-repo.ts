@@ -77,9 +77,10 @@ export class TelemetryReportRepository {
     const exceptionType = input.envelope.throwable?.type ?? null;
     const exceptionMessage = input.envelope.throwable?.message ?? null;
 
-    await this.pool.query("BEGIN");
+    const client = await this.pool.connect();
     try {
-      await this.pool.query(
+      await client.query("BEGIN");
+      await client.query(
         `
         INSERT INTO telemetry_crash_reports (
           project_id,
@@ -125,7 +126,7 @@ export class TelemetryReportRepository {
         ]
       );
 
-      await this.pool.query(
+      await client.query(
         `
         INSERT INTO telemetry_crash_groups (
           project_id,
@@ -184,10 +185,12 @@ export class TelemetryReportRepository {
         ]
       );
 
-      await this.pool.query("COMMIT");
+      await client.query("COMMIT");
     } catch (error) {
-      await this.pool.query("ROLLBACK");
+      await client.query("ROLLBACK");
       throw error;
+    } finally {
+      client.release();
     }
   }
 

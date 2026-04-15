@@ -75,6 +75,7 @@ export class CrashTelemetryRelay {
   private readonly fingerprintStates = new Map<string, FingerprintState>();
   private readonly summaryIntervalMs: number;
   private projectRegistry: CrashRelayProjectRegistry | null = null;
+  private projectsRouteEnabled = false;
 
   public constructor(private readonly deps: CrashRelayDependencies) {
     this.legacyPath = normalizeRelayPath(this.deps.config.CRASH_RELAY_PATH);
@@ -100,6 +101,7 @@ export class CrashTelemetryRelay {
     const legacyConfigured = Boolean(this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID);
     const dbProjectCount = await this.deps.telemetryProjectRepo.countProjects();
     const projectsConfigured = dbProjectCount > 0 || (this.projectRegistry?.size() ?? 0) > 0;
+    this.projectsRouteEnabled = projectsConfigured;
     if (!legacyConfigured && !projectsConfigured) {
       throw new Error(
         "Crash relay requires either legacy channel config or a CRASH_RELAY_PROJECTS_FILE project registry."
@@ -178,7 +180,7 @@ export class CrashTelemetryRelay {
     const method = request.method?.toUpperCase() ?? "";
     const requestPath = extractPathname(request.url);
     const isLegacyRoute = requestPath === this.legacyPath;
-    const isProjectsRoute = this.projectRegistry != null && requestPath === this.projectsPath;
+    const isProjectsRoute = this.projectsRouteEnabled && requestPath === this.projectsPath;
 
     if (!isLegacyRoute && !isProjectsRoute) {
       writeJson(response, 404, { error: "not_found" });
@@ -377,36 +379,36 @@ export class CrashTelemetryRelay {
       return;
     }
 
-    const project = (await this.deps.telemetryProjectRepo.resolveHostedProjectByKey(projectKey))
-      ?? this.projectRegistry?.findByProjectKey(projectKey)
-      ?? null;
-    if (!project) {
-      writeJson(response, 403, { error: "unknown_project_key" });
-      return;
-    }
-    if (!project.enabled) {
-      writeJson(response, 403, { error: "project_disabled", projectId: project.projectId });
-      return;
-    }
-
-    const projectDecision = takeWindowedRateLimit(
-      this.projectRateLimits,
-      project.projectId.toLowerCase(),
-      project.rateLimitPerMinute,
-      60,
-      Date.now()
-    );
-    if (!projectDecision.allowed) {
-      writeJson(response, 429, {
-        error: "rate_limited",
-        scope: "project",
-        retryAfterSec: Math.max(1, projectDecision.retryAfterSec),
-        projectId: project.projectId
-      });
-      return;
-    }
-
     try {
+      const project = (await this.deps.telemetryProjectRepo.resolveHostedProjectByKey(projectKey))
+        ?? this.projectRegistry?.findByProjectKey(projectKey)
+        ?? null;
+      if (!project) {
+        writeJson(response, 403, { error: "unknown_project_key" });
+        return;
+      }
+      if (!project.enabled) {
+        writeJson(response, 403, { error: "project_disabled", projectId: project.projectId });
+        return;
+      }
+
+      const projectDecision = takeWindowedRateLimit(
+        this.projectRateLimits,
+        project.projectId.toLowerCase(),
+        project.rateLimitPerMinute,
+        60,
+        Date.now()
+      );
+      if (!projectDecision.allowed) {
+        writeJson(response, 429, {
+          error: "rate_limited",
+          scope: "project",
+          retryAfterSec: Math.max(1, projectDecision.retryAfterSec),
+          projectId: project.projectId
+        });
+        return;
+      }
+
       const rawBody = await readBody(
         request,
         Math.min(this.deps.config.CRASH_RELAY_MAX_BODY_BYTES, project.maxPayloadBytes)
