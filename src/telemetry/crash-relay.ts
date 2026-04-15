@@ -1,49 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { WikiBot } from "../discord/bot.js";
 import type { CrashThreadRepository } from "../db/repositories/crash-thread-repo.js";
+import { crashReportSchema, type CrashReportEnvelope } from "./crash-contract.js";
+import { CrashRelayProjectRegistry, type CrashRelayProjectConfig } from "./crash-project-registry.js";
 import { shortHash } from "../utils.js";
 
 const GLOBAL_LIMIT_KEY = "__global__";
-
-const crashThrowableSchema = z
-  .object({
-    type: z.string().trim().min(1).max(240).optional(),
-    message: z.string().trim().min(1).max(2_000).optional(),
-    stack: z.array(z.string().max(1_000)).max(200).optional()
-  })
-  .passthrough()
-  .optional();
-
-const crashReportSchema = z
-  .object({
-    reportId: z.string().trim().min(1).max(200).optional(),
-    source: z.string().trim().min(1).max(120).optional(),
-    fingerprint: z.string().trim().min(1).max(200).optional(),
-    capturedAtUtc: z.string().trim().min(1).max(80).optional(),
-    pluginIdentifier: z.string().trim().min(1).max(200).optional(),
-    pluginVersion: z.string().trim().min(1).max(120).optional(),
-    threadName: z.string().trim().min(1).max(200).optional(),
-    worldName: z.string().trim().min(1).max(200).nullable().optional(),
-    worldRemovalReason: z.string().trim().min(1).max(200).nullable().optional(),
-    worldFailurePluginIdentifier: z.string().trim().min(1).max(200).nullable().optional(),
-    throwable: crashThrowableSchema
-  })
-  .passthrough()
-  .refine(
-    (value) =>
-      Boolean(
-        value.fingerprint ||
-          value.throwable?.type ||
-          value.throwable?.message ||
-          (value.throwable?.stack != null && value.throwable.stack.length > 0)
-      ),
-    { message: "missing-crash-identifiers" }
-  );
-
-type CrashReportEnvelope = z.infer<typeof crashReportSchema>;
 
 interface CrashRelayDependencies {
   config: AppConfig;
@@ -58,12 +22,25 @@ interface CrashRelayMessage {
   attachmentName?: string;
 }
 
+interface RelayDispatchTarget {
+  projectId: string;
+  projectDisplayName: string;
+  channelId: string;
+  mentionRoleId?: string;
+  includeJsonAttachment: boolean;
+  stackLines: number;
+  fingerprintCooldownMs: number;
+}
+
 interface WindowCounterState {
   count: number;
   resetAtMs: number;
 }
 
 interface FingerprintState {
+  projectId: string;
+  projectDisplayName: string;
+  channelId: string;
   fingerprint: string;
   pluginIdentifier: string;
   throwableType: string;
@@ -84,20 +61,22 @@ export class CrashTelemetryRelay {
   private server: Server | null = null;
   private summaryTimer: NodeJS.Timeout | null = null;
   private flushInProgress = false;
-  private readonly path: string;
+  private readonly legacyPath: string;
+  private readonly projectsPath: string;
   private readonly blockedIps: Set<string>;
   private readonly blockedFingerprints: Set<string>;
   private readonly ipRateLimits = new Map<string, WindowCounterState>();
   private readonly globalRateLimits = new Map<string, WindowCounterState>();
+  private readonly projectRateLimits = new Map<string, WindowCounterState>();
   private readonly fingerprintStates = new Map<string, FingerprintState>();
-  private readonly fingerprintCooldownMs: number;
   private readonly summaryIntervalMs: number;
+  private projectRegistry: CrashRelayProjectRegistry | null = null;
 
   public constructor(private readonly deps: CrashRelayDependencies) {
-    this.path = normalizeRelayPath(this.deps.config.CRASH_RELAY_PATH);
+    this.legacyPath = normalizeRelayPath(this.deps.config.CRASH_RELAY_PATH);
+    this.projectsPath = normalizeProjectsRelayPath(this.deps.config.CRASH_RELAY_PROJECTS_PATH);
     this.blockedIps = parseCsvSet(this.deps.config.CRASH_RELAY_BLOCKED_IPS);
     this.blockedFingerprints = parseCsvSet(this.deps.config.CRASH_RELAY_BLOCKED_FINGERPRINTS);
-    this.fingerprintCooldownMs = this.deps.config.CRASH_RELAY_FINGERPRINT_COOLDOWN_SECONDS * 1_000;
     this.summaryIntervalMs = this.deps.config.CRASH_RELAY_SUMMARY_INTERVAL_SECONDS * 1_000;
   }
 
@@ -110,8 +89,16 @@ export class CrashTelemetryRelay {
       return;
     }
 
-    if (!this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID) {
-      throw new Error("CRASH_RELAY_DISCORD_CHANNEL_ID is required when CRASH_RELAY_ENABLED=true");
+    this.projectRegistry = this.deps.config.CRASH_RELAY_PROJECTS_FILE
+      ? await CrashRelayProjectRegistry.loadFromFile(this.deps.config.CRASH_RELAY_PROJECTS_FILE)
+      : null;
+
+    const legacyConfigured = Boolean(this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID);
+    const projectsConfigured = (this.projectRegistry?.size() ?? 0) > 0;
+    if (!legacyConfigured && !projectsConfigured) {
+      throw new Error(
+        "Crash relay requires either legacy channel config or a CRASH_RELAY_PROJECTS_FILE project registry."
+      );
     }
 
     this.server = createServer((request, response) => {
@@ -149,9 +136,13 @@ export class CrashTelemetryRelay {
       {
         host: this.deps.config.CRASH_RELAY_BIND_HOST,
         port: this.deps.config.CRASH_RELAY_PORT,
-        path: this.path,
-        channelId: this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID,
+        legacyPath: this.legacyPath,
+        projectsPath: this.projectsPath,
+        legacyChannelId: this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID,
         authTokenConfigured: Boolean(this.deps.config.CRASH_RELAY_AUTH_TOKEN),
+        projectRegistryConfigured: projectsConfigured,
+        projectCount: this.projectRegistry?.size() ?? 0,
+        enabledProjectCount: this.projectRegistry?.enabledProjectCount() ?? 0,
         blockedIpCount: this.blockedIps.size,
         blockedFingerprintCount: this.blockedFingerprints.size
       },
@@ -180,19 +171,40 @@ export class CrashTelemetryRelay {
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const method = request.method?.toUpperCase() ?? "";
     const requestPath = extractPathname(request.url);
+    const isLegacyRoute = requestPath === this.legacyPath;
+    const isProjectsRoute = this.projectRegistry != null && requestPath === this.projectsPath;
 
-    if (requestPath !== this.path) {
+    if (!isLegacyRoute && !isProjectsRoute) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
 
     if (method === "GET") {
-      writeJson(response, 200, { ok: true });
+      writeJson(response, 200, { ok: true, mode: isProjectsRoute ? "projects" : "legacy" });
       return;
     }
 
     if (method !== "POST") {
       writeJson(response, 405, { error: "method_not_allowed" });
+      return;
+    }
+
+    if (isProjectsRoute) {
+      await this.handleProjectRequest(request, response, requestPath);
+      return;
+    }
+
+    await this.handleLegacyRequest(request, response, requestPath);
+  }
+
+  private async handleLegacyRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    requestPath: string
+  ): Promise<void> {
+    const target = this.legacyTarget();
+    if (!target) {
+      writeJson(response, 503, { error: "legacy_relay_not_configured" });
       return;
     }
 
@@ -259,7 +271,7 @@ export class CrashTelemetryRelay {
         return;
       }
 
-      const duplicateDecision = this.registerFingerprintObservation(fingerprint, parsed, Date.now());
+      const duplicateDecision = this.registerFingerprintObservation(fingerprint, parsed, Date.now(), target);
       if (!duplicateDecision.shouldPostNow) {
         writeJson(response, 202, {
           ok: true,
@@ -269,21 +281,18 @@ export class CrashTelemetryRelay {
         return;
       }
 
-      const channelId = this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID;
-      if (!channelId) {
-        throw new Error("CRASH_RELAY_DISCORD_CHANNEL_ID is required when CRASH_RELAY_ENABLED=true");
-      }
-
       const message = buildCrashRelayMessage({ ...parsed, fingerprint }, rawBody, {
-        includeJsonAttachment: this.deps.config.CRASH_RELAY_ATTACH_JSON,
-        stackLines: this.deps.config.CRASH_RELAY_STACK_LINES,
-        ...(this.deps.config.CRASH_RELAY_MENTION_ROLE_ID
-          ? { mentionRoleId: this.deps.config.CRASH_RELAY_MENTION_ROLE_ID }
-          : {})
+        title: "Tamework crash report received.",
+        attachmentPrefix: "tamework-crash",
+        includeJsonAttachment: target.includeJsonAttachment,
+        stackLines: target.stackLines,
+        ...(target.mentionRoleId ? { mentionRoleId: target.mentionRoleId } : {})
       });
 
       await this.postToFingerprintThread({
-        channelId,
+        channelId: target.channelId,
+        projectId: target.projectId,
+        projectDisplayName: target.projectDisplayName,
         fingerprint,
         throwableType: fallback(parsed.throwable?.type, "unknown"),
         message
@@ -313,14 +322,184 @@ export class CrashTelemetryRelay {
     }
   }
 
+  private async handleProjectRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    requestPath: string
+  ): Promise<void> {
+    const normalizedIp = normalizeIp(request.socket.remoteAddress);
+    if (this.blockedIps.has(normalizedIp)) {
+      writeJson(response, 403, { error: "blocked_ip" });
+      return;
+    }
+
+    const globalDecision = takeWindowedRateLimit(
+      this.globalRateLimits,
+      GLOBAL_LIMIT_KEY,
+      this.deps.config.CRASH_RELAY_GLOBAL_RATE_LIMIT_MAX,
+      this.deps.config.CRASH_RELAY_GLOBAL_RATE_LIMIT_WINDOW_SECONDS,
+      Date.now()
+    );
+    if (!globalDecision.allowed) {
+      this.deps.logger.warn(
+        { scope: "global", retryAfterSec: globalDecision.retryAfterSec },
+        "Crash telemetry request rate-limited"
+      );
+      writeRateLimited(response, globalDecision.retryAfterSec, "global");
+      return;
+    }
+
+    const ipDecision = takeWindowedRateLimit(
+      this.ipRateLimits,
+      normalizedIp,
+      this.deps.config.CRASH_RELAY_IP_RATE_LIMIT_MAX,
+      this.deps.config.CRASH_RELAY_IP_RATE_LIMIT_WINDOW_SECONDS,
+      Date.now()
+    );
+    if (!ipDecision.allowed) {
+      this.deps.logger.warn(
+        { scope: "ip", ip: normalizedIp, retryAfterSec: ipDecision.retryAfterSec },
+        "Crash telemetry request rate-limited"
+      );
+      writeRateLimited(response, ipDecision.retryAfterSec, "ip");
+      return;
+    }
+
+    const projectKey = extractHeaderValue(request.headers["x-telemetry-project-key"]);
+    if (!projectKey) {
+      writeJson(response, 401, { error: "missing_project_key" });
+      return;
+    }
+
+    const project = this.projectRegistry?.findByProjectKey(projectKey) ?? null;
+    if (!project) {
+      writeJson(response, 403, { error: "unknown_project_key" });
+      return;
+    }
+    if (!project.enabled) {
+      writeJson(response, 403, { error: "project_disabled", projectId: project.projectId });
+      return;
+    }
+
+    const projectDecision = takeWindowedRateLimit(
+      this.projectRateLimits,
+      project.projectId.toLowerCase(),
+      project.rateLimitPerMinute,
+      60,
+      Date.now()
+    );
+    if (!projectDecision.allowed) {
+      writeJson(response, 429, {
+        error: "rate_limited",
+        scope: "project",
+        retryAfterSec: Math.max(1, projectDecision.retryAfterSec),
+        projectId: project.projectId
+      });
+      return;
+    }
+
+    try {
+      const rawBody = await readBody(
+        request,
+        Math.min(this.deps.config.CRASH_RELAY_MAX_BODY_BYTES, project.maxPayloadBytes)
+      );
+      const parsedUnknown = JSON.parse(rawBody) as unknown;
+      const parseResult = crashReportSchema.safeParse(parsedUnknown);
+      if (!parseResult.success) {
+        writeJson(response, 422, {
+          error: "invalid_payload",
+          details: parseResult.error.issues.map((issue) => issue.message).slice(0, 3)
+        });
+        return;
+      }
+
+      const parsed = parseResult.data;
+      const providedProjectId = parsed.projectId?.trim();
+      if (!providedProjectId || providedProjectId.toLowerCase() !== project.projectId.toLowerCase()) {
+        writeJson(response, 403, {
+          error: "project_id_mismatch",
+          expectedProjectId: project.projectId,
+          providedProjectId: providedProjectId ?? null
+        });
+        return;
+      }
+
+      const fingerprint = deriveFingerprint(parsed);
+      if (this.blockedFingerprints.has(fingerprint.toLowerCase())) {
+        writeJson(response, 403, { error: "blocked_fingerprint" });
+        return;
+      }
+
+      const target = this.projectTarget(project);
+      const duplicateDecision = this.registerFingerprintObservation(fingerprint, parsed, Date.now(), target);
+      if (!duplicateDecision.shouldPostNow) {
+        writeJson(response, 202, {
+          ok: true,
+          suppressed: true,
+          fingerprint,
+          projectId: target.projectId
+        });
+        return;
+      }
+
+      const message = buildCrashRelayMessage({ ...parsed, fingerprint }, rawBody, {
+        title: `${target.projectDisplayName} crash report received.`,
+        attachmentPrefix: `${safeFileToken(target.projectId)}-crash`,
+        includeJsonAttachment: target.includeJsonAttachment,
+        stackLines: target.stackLines,
+        ...(target.mentionRoleId ? { mentionRoleId: target.mentionRoleId } : {})
+      });
+
+      await this.postToFingerprintThread({
+        channelId: target.channelId,
+        projectId: target.projectId,
+        projectDisplayName: target.projectDisplayName,
+        fingerprint,
+        throwableType: fallback(parsed.throwable?.type, "unknown"),
+        message
+      });
+
+      writeJson(response, 202, {
+        ok: true,
+        fingerprint,
+        projectId: target.projectId
+      });
+    } catch (error) {
+      if (error instanceof PayloadTooLargeError) {
+        writeJson(response, 413, { error: "payload_too_large" });
+        return;
+      }
+
+      if (error instanceof SyntaxError) {
+        writeJson(response, 400, { error: "invalid_json" });
+        return;
+      }
+
+      this.deps.logger.error(
+        {
+          err: error,
+          path: requestPath,
+          remoteAddress: request.socket.remoteAddress,
+          projectKey
+        },
+        "Failed to process incoming project crash telemetry report"
+      );
+      writeJson(response, 500, { error: "relay_failed" });
+    }
+  }
+
   private async postToFingerprintThread(params: {
     channelId: string;
+    projectId: string;
+    projectDisplayName: string;
     fingerprint: string;
     throwableType: string;
     message: CrashRelayMessage;
   }): Promise<void> {
     const destination = await this.resolveOrCreateFingerprintThreadId({
       channelId: params.channelId,
+      projectId: params.projectId,
+      projectDisplayName: params.projectDisplayName,
       fingerprint: params.fingerprint,
       throwableType: params.throwableType
     });
@@ -335,6 +514,8 @@ export class CrashTelemetryRelay {
 
     const replacementThreadId = await this.createAndPersistFingerprintThread({
       channelId: params.channelId,
+      projectId: params.projectId,
+      projectDisplayName: params.projectDisplayName,
       fingerprint: params.fingerprint,
       throwableType: params.throwableType,
       reasonSuffix: `replace ${destination.threadId}`
@@ -391,16 +572,24 @@ export class CrashTelemetryRelay {
 
   private async resolveOrCreateFingerprintThreadId(params: {
     channelId: string;
+    projectId: string;
+    projectDisplayName: string;
     fingerprint: string;
     throwableType: string;
   }): Promise<{ threadId: string; created: boolean }> {
-    const mappedThreadId = await this.deps.crashThreadRepo.getThreadId(params.channelId, params.fingerprint);
+    const mappedThreadId = await this.deps.crashThreadRepo.getThreadId(
+      params.channelId,
+      params.projectId,
+      params.fingerprint
+    );
     if (mappedThreadId) {
       return { threadId: mappedThreadId, created: false };
     }
 
     const threadId = await this.createAndPersistFingerprintThread({
       channelId: params.channelId,
+      projectId: params.projectId,
+      projectDisplayName: params.projectDisplayName,
       fingerprint: params.fingerprint,
       throwableType: params.throwableType,
       reasonSuffix: "new"
@@ -411,22 +600,30 @@ export class CrashTelemetryRelay {
 
   private async createAndPersistFingerprintThread(params: {
     channelId: string;
+    projectId: string;
+    projectDisplayName: string;
     fingerprint: string;
     throwableType: string;
     reasonSuffix: string;
   }): Promise<string> {
-    const threadName = buildFingerprintThreadName(params.fingerprint, params.throwableType);
-    const openerContent = buildThreadOpenerMessage(params.fingerprint, params.throwableType);
+    const threadName = buildFingerprintThreadName(params.fingerprint, params.throwableType, params.projectId);
+    const openerContent = buildThreadOpenerMessage(params.fingerprint, params.throwableType, params.projectDisplayName);
     const created = await this.deps.bot.createCrashThread({
       channelId: params.channelId,
       threadName,
       openerContent
     });
 
-    await this.deps.crashThreadRepo.upsertThreadId(params.channelId, params.fingerprint, created.threadId);
+    await this.deps.crashThreadRepo.upsertThreadId(
+      params.channelId,
+      params.projectId,
+      params.fingerprint,
+      created.threadId
+    );
     this.deps.logger.info(
       {
         channelId: params.channelId,
+        projectId: params.projectId,
         threadId: created.threadId,
         fingerprint: params.fingerprint,
         reason: params.reasonSuffix
@@ -439,21 +636,26 @@ export class CrashTelemetryRelay {
   private registerFingerprintObservation(
     fingerprint: string,
     envelope: CrashReportEnvelope,
-    nowMs: number
+    nowMs: number,
+    target: RelayDispatchTarget
   ): { shouldPostNow: boolean } {
-    const existing = this.fingerprintStates.get(fingerprint);
+    const fingerprintStateKey = buildFingerprintStateKey(target.channelId, target.projectId, fingerprint);
+    const existing = this.fingerprintStates.get(fingerprintStateKey);
     if (!existing || nowMs >= existing.suppressUntilMs) {
       if (existing && existing.suppressedCount > 0) {
         void this.postSuppressedSummary(existing);
       }
 
-      this.fingerprintStates.set(fingerprint, {
+      this.fingerprintStates.set(fingerprintStateKey, {
+        projectId: target.projectId,
+        projectDisplayName: target.projectDisplayName,
+        channelId: target.channelId,
         fingerprint,
         pluginIdentifier: fallback(envelope.pluginIdentifier, "unknown"),
         throwableType: fallback(envelope.throwable?.type, "unknown"),
         firstSeenAtMs: nowMs,
         lastSeenAtMs: nowMs,
-        suppressUntilMs: nowMs + this.fingerprintCooldownMs,
+        suppressUntilMs: nowMs + target.fingerprintCooldownMs,
         suppressedCount: 0
       });
 
@@ -473,19 +675,19 @@ export class CrashTelemetryRelay {
     this.flushInProgress = true;
     try {
       const nowMs = Date.now();
-      for (const [fingerprint, state] of this.fingerprintStates.entries()) {
+      for (const [stateKey, state] of this.fingerprintStates.entries()) {
         if (nowMs < state.suppressUntilMs) {
           continue;
         }
 
         if (state.suppressedCount === 0) {
-          this.fingerprintStates.delete(fingerprint);
+          this.fingerprintStates.delete(stateKey);
           continue;
         }
 
         const sent = await this.postSuppressedSummary(state);
         if (sent) {
-          this.fingerprintStates.delete(fingerprint);
+          this.fingerprintStates.delete(stateKey);
         } else {
           state.suppressUntilMs = nowMs + this.summaryIntervalMs;
         }
@@ -498,21 +700,18 @@ export class CrashTelemetryRelay {
   }
 
   private async postSuppressedSummary(state: FingerprintState): Promise<boolean> {
-    const channelId = this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID;
-    if (!channelId) {
-      return false;
-    }
-
-    const cooldownSeconds = this.deps.config.CRASH_RELAY_FINGERPRINT_COOLDOWN_SECONDS;
+    const cooldownSeconds = Math.max(1, Math.round((state.suppressUntilMs - state.firstSeenAtMs) / 1_000));
     const content =
-      `Suppressed ${state.suppressedCount} duplicate crash reports in the last ${cooldownSeconds}s.\n` +
+      `Suppressed ${state.suppressedCount} duplicate crash reports for ${safeInline(state.projectDisplayName)} in the last ${cooldownSeconds}s.\n` +
       `fingerprint: \`${safeInline(state.fingerprint)}\`\n` +
       `plugin: \`${safeInline(state.pluginIdentifier)}\`\n` +
       `throwable: \`${safeInline(state.throwableType)}\``;
 
     try {
       await this.postToFingerprintThread({
-        channelId,
+        channelId: state.channelId,
+        projectId: state.projectId,
+        projectDisplayName: state.projectDisplayName,
         fingerprint: state.fingerprint,
         throwableType: state.throwableType,
         message: { content }
@@ -535,29 +734,64 @@ export class CrashTelemetryRelay {
       return false;
     }
   }
+
+  private legacyTarget(): RelayDispatchTarget | null {
+    const channelId = this.deps.config.CRASH_RELAY_DISCORD_CHANNEL_ID;
+    if (!channelId) {
+      return null;
+    }
+    return {
+      projectId: "legacy",
+      projectDisplayName: "Alec's Tamework!",
+      channelId,
+      includeJsonAttachment: this.deps.config.CRASH_RELAY_ATTACH_JSON,
+      stackLines: this.deps.config.CRASH_RELAY_STACK_LINES,
+      fingerprintCooldownMs: this.deps.config.CRASH_RELAY_FINGERPRINT_COOLDOWN_SECONDS * 1_000,
+      ...(this.deps.config.CRASH_RELAY_MENTION_ROLE_ID
+        ? { mentionRoleId: this.deps.config.CRASH_RELAY_MENTION_ROLE_ID }
+        : {})
+    };
+  }
+
+  private projectTarget(project: CrashRelayProjectConfig): RelayDispatchTarget {
+    return {
+      projectId: project.projectId,
+      projectDisplayName: project.displayName,
+      channelId: project.discord.channelId,
+      includeJsonAttachment: project.attachJson,
+      stackLines: project.stackLines,
+      fingerprintCooldownMs: project.fingerprintCooldownSeconds * 1_000,
+      ...(project.discord.mentionRoleId ? { mentionRoleId: project.discord.mentionRoleId } : {})
+    };
+  }
 }
 
-function buildFingerprintThreadName(fingerprint: string, throwableType: string): string {
+function buildFingerprintThreadName(fingerprint: string, throwableType: string, projectId?: string): string {
+  const projectToken = projectId ? safeThreadToken(projectId).slice(0, 24) : "";
   const fingerprintToken = safeFileToken(fingerprint.toLowerCase()).slice(0, 32) || "unknown";
   const throwableToken = safeThreadToken(throwableType).slice(0, 60);
-  const baseName = throwableToken
-    ? `crash-${fingerprintToken}-${throwableToken}`
-    : `crash-${fingerprintToken}`;
+  const prefix = projectToken ? `crash-${projectToken}-${fingerprintToken}` : `crash-${fingerprintToken}`;
+  const baseName = throwableToken ? `${prefix}-${throwableToken}` : prefix;
   return truncate(baseName, 100);
 }
 
-function buildThreadOpenerMessage(fingerprint: string, throwableType: string): string {
+function buildThreadOpenerMessage(fingerprint: string, throwableType: string, projectLabel?: string): string {
   return [
     "Crash fingerprint thread created.",
+    projectLabel ? `project: \`${safeInline(projectLabel)}\`` : null,
     `fingerprint: \`${safeInline(fingerprint)}\``,
     `throwable: \`${safeInline(throwableType || "unknown")}\``
-  ].join("\n");
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 function buildCrashRelayMessage(
   envelope: CrashReportEnvelope,
   rawJson: string,
   options: {
+    title: string;
+    attachmentPrefix: string;
     mentionRoleId?: string;
     includeJsonAttachment: boolean;
     stackLines: number;
@@ -570,9 +804,13 @@ function buildCrashRelayMessage(
   const pluginIdentifier = fallback(envelope.pluginIdentifier, "unknown");
   const pluginVersion = fallback(envelope.pluginVersion, "unknown");
   const capturedAt = fallback(envelope.capturedAtUtc, "unknown");
+  const lastCapturedAt = fallback(envelope.lastCapturedAtUtc, capturedAt);
   const threadName = fallback(envelope.threadName, "unknown");
   const throwableType = fallback(envelope.throwable?.type, "unknown");
   const throwableMessage = fallback(envelope.throwable?.message, "<empty>");
+  const projectId = fallback(envelope.projectId, "legacy");
+  const projectDisplayName = fallback(envelope.projectDisplayName, pluginIdentifier);
+  const occurrenceCount = envelope.occurrenceCount ?? 1;
 
   const stackPreview = (envelope.throwable?.stack ?? [])
     .slice(0, Math.max(1, options.stackLines))
@@ -590,11 +828,14 @@ function buildCrashRelayMessage(
     .join(", ");
 
   const lines: string[] = [
-    `${mention}Tamework crash report received.`,
+    `${mention}${options.title}`,
+    `project: \`${safeInline(projectDisplayName)}\` (\`${safeInline(projectId)}\`)`,
     `reportId: \`${safeInline(reportId)}\``,
     `fingerprint: \`${safeInline(fingerprint)}\``,
     `source: \`${safeInline(source)}\``,
     `capturedAtUtc: \`${safeInline(capturedAt)}\``,
+    `lastCapturedAtUtc: \`${safeInline(lastCapturedAt)}\``,
+    `occurrences: \`${safeInline(String(occurrenceCount))}\``,
     `plugin: \`${safeInline(pluginIdentifier)}\` (\`${safeInline(pluginVersion)}\`)`,
     `thread: \`${safeInline(threadName)}\``,
     worldContext ? `world: ${worldContext}` : "world: <none>",
@@ -609,7 +850,7 @@ function buildCrashRelayMessage(
   if (content.length > 1900) {
     const overflow = content.length - 1900;
     const shortenedStack = truncate(stackPreview || "<no stack frames>", Math.max(80, 500 - overflow));
-    lines[11] = shortenedStack;
+    lines[14] = shortenedStack;
     content = lines.join("\n");
     if (content.length > 1900) {
       content = truncate(content, 1900);
@@ -622,7 +863,7 @@ function buildCrashRelayMessage(
 
   if (options.includeJsonAttachment) {
     message.attachmentJson = rawJson;
-    message.attachmentName = `tamework-crash-${safeFileToken(fingerprint)}.json`;
+    message.attachmentName = `${safeFileToken(options.attachmentPrefix)}-${safeFileToken(fingerprint)}.json`;
   }
 
   return message;
@@ -704,10 +945,31 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
+function buildFingerprintStateKey(channelId: string, projectId: string, fingerprint: string): string {
+  return [channelId.trim().toLowerCase(), projectId.trim().toLowerCase(), fingerprint.trim().toLowerCase()].join("|");
+}
+
+function extractHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw || !raw.trim()) {
+    return null;
+  }
+  return raw.trim();
+}
+
 function normalizeRelayPath(path: string): string {
   const trimmed = path.trim();
   if (!trimmed) {
     return "/tamework/crash-report";
+  }
+
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+function normalizeProjectsRelayPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return "/api/v1/ingest/crash";
   }
 
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
@@ -817,6 +1079,7 @@ export const crashRelayInternals = {
   crashReportSchema,
   isAuthorized,
   normalizeRelayPath,
+  normalizeProjectsRelayPath,
   extractPathname,
   parseCsvSet,
   normalizeIp,
