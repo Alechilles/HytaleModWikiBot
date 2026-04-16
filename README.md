@@ -30,7 +30,8 @@ Discord bot for `wiki.hytalemodding.dev`, with optional telemetry alert delivery
    - `TELEMETRY_ALERT_DELIVERY_RETRY_DELAY_SECONDS`
    - `TELEMETRY_ALERT_DELIVERY_CLAIM_TIMEOUT_SECONDS`
    - `TELEMETRY_ALERT_DELIVERY_MAX_ATTEMPTS`
-5. Point `DATABASE_URL` at the same Postgres instance used by `AlecsTelemetryPlatform` when telemetry delivery is enabled.
+5. For shared/dev/prod deployments, point `DATABASE_URL` at the same Postgres instance used by `AlecsTelemetryPlatform` when telemetry delivery is enabled.
+   - Note: the local `docker compose` setup still overrides `DATABASE_URL` to its bundled Postgres container.
 6. Run `npm install`.
 7. Run `npm run migrate`.
 8. Register commands with `npm run register:commands -- --scope global`.
