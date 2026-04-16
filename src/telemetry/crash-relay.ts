@@ -996,7 +996,7 @@ function normalizeRelayPath(path: string): string {
 function normalizeProjectsRelayPath(path: string): string {
   const trimmed = path.trim();
   if (!trimmed) {
-    return "/api/v1/ingest/crash";
+    return "/ingest/crash";
   }
 
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;

@@ -61,7 +61,7 @@ cp .env.example .env
   - `CRASH_RELAY_BIND_HOST` (default `0.0.0.0`)
   - `CRASH_RELAY_PORT` (default `8787`)
   - `CRASH_RELAY_PATH` (default `/tamework/crash-report`)
-  - `CRASH_RELAY_PROJECTS_PATH` (default `/api/v1/ingest/crash`)
+  - `CRASH_RELAY_PROJECTS_PATH` (default `/ingest/crash`)
   - `CRASH_RELAY_PROJECTS_FILE` (server-side hosted project registry JSON)
   - `CRASH_RELAY_AUTH_TOKEN` (shared secret expected in `Authorization: Bearer ...` or `X-API-Key`)
   - `CRASH_RELAY_DISCORD_CHANNEL_ID` (target channel for crash alerts; required when relay enabled)
