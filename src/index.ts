@@ -1,6 +1,6 @@
 import "dotenv/config";
 import cron from "node-cron";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveTelemetryAlertDatabaseUrl } from "./config.js";
 import { createLogger } from "./logger.js";
 import { createPool } from "./db/pool.js";
 import { AliasRepository } from "./db/repositories/alias-repo.js";
@@ -23,13 +23,15 @@ async function main() {
   const config = loadConfig(process.env);
   const logger = createLogger(config.LOG_LEVEL);
   const pool = createPool(config.DATABASE_URL);
+  const alertDatabaseUrl = resolveTelemetryAlertDatabaseUrl(config);
+  const alertPool = alertDatabaseUrl === config.DATABASE_URL ? pool : createPool(alertDatabaseUrl);
 
   const aliasRepo = new AliasRepository(pool);
   const cacheRepo = new CacheRepository(pool);
   const crashThreadRepo = new CrashThreadRepository(pool);
   const guildSettingsRepo = new GuildSettingsRepository(pool);
   const queryLogRepo = new QueryLogRepository(pool);
-  const alertJobRepo = new TelemetryAlertJobRepository(pool);
+  const alertJobRepo = new TelemetryAlertJobRepository(alertPool);
 
   const wikiClient = new WikiClient(config.WIKI_BASE_URL, config.WIKI_API_KEY);
   const contentSearchEnabled = config.WIKI_CONTENT_SEARCH_ENABLED && Boolean(config.WIKI_API_KEY);
@@ -88,6 +90,9 @@ async function main() {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "Shutting down");
     await alertDeliveryWorker.stop();
+    if (alertPool !== pool) {
+      await alertPool.end();
+    }
     await pool.end();
     process.exit(0);
   };

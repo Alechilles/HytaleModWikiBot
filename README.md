@@ -22,15 +22,18 @@ Discord bot for `wiki.hytalemodding.dev`, with optional telemetry alert delivery
    - `DISCORD_TOKEN`
    - `DISCORD_APPLICATION_ID`
    - `DATABASE_URL`
+   - `TELEMETRY_ALERT_DATABASE_URL` when telemetry alerts live in a different database than the bot's wiki/config tables
 3. Optional wiki search envs remain available as before.
 4. Optional telemetry delivery envs:
+   - `TELEMETRY_ALERT_DATABASE_URL`
    - `TELEMETRY_ALERT_DELIVERY_ENABLED`
    - `TELEMETRY_ALERT_DELIVERY_POLL_INTERVAL_MS`
    - `TELEMETRY_ALERT_DELIVERY_BATCH_SIZE`
    - `TELEMETRY_ALERT_DELIVERY_RETRY_DELAY_SECONDS`
    - `TELEMETRY_ALERT_DELIVERY_CLAIM_TIMEOUT_SECONDS`
    - `TELEMETRY_ALERT_DELIVERY_MAX_ATTEMPTS`
-5. For shared/dev/prod deployments, point `DATABASE_URL` at the same Postgres instance used by `AlecsTelemetryPlatform` when telemetry delivery is enabled.
+5. For shared/dev/prod deployments, keep `DATABASE_URL` pointed at the bot database and point `TELEMETRY_ALERT_DATABASE_URL` at the `AlecsTelemetryPlatform` database that owns `telemetry_alert_jobs`.
+   - If `TELEMETRY_ALERT_DATABASE_URL` is empty, alert delivery falls back to `DATABASE_URL`.
    - Note: the local `docker compose` setup still overrides `DATABASE_URL` to its bundled Postgres container.
 6. Run `npm install`.
 7. Run `npm run migrate`.

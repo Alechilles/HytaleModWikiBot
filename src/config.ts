@@ -27,6 +27,7 @@ const configSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_APPLICATION_ID: z.string().min(1),
   DATABASE_URL: z.string().url(),
+  TELEMETRY_ALERT_DATABASE_URL: optionalNonEmptyString.pipe(z.string().url().optional()),
   WIKI_BASE_URL: z.string().url().default("https://wiki.hytalemodding.dev"),
   WIKI_API_KEY: optionalNonEmptyString,
   WIKI_CONTENT_SEARCH_ENABLED: booleanFromEnv.default(false),
@@ -54,4 +55,8 @@ export type AppConfig = z.infer<typeof configSchema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   return configSchema.parse(env);
+}
+
+export function resolveTelemetryAlertDatabaseUrl(config: Pick<AppConfig, "DATABASE_URL" | "TELEMETRY_ALERT_DATABASE_URL">): string {
+  return config.TELEMETRY_ALERT_DATABASE_URL ?? config.DATABASE_URL;
 }
