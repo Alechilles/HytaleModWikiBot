@@ -1,5 +1,17 @@
 import { z } from "zod";
 
+const crashAlertDetailsSchema = z.object({
+  reportId: z.string().trim().min(1),
+  fingerprint: z.string().trim().min(1),
+  throwableType: z.string().trim().min(1)
+});
+
+const manualReportAlertDetailsSchema = z.object({
+  reportId: z.string().trim().min(1),
+  reportKind: z.enum(["issue", "suggestion"]),
+  title: z.string().trim().min(1)
+});
+
 export const telemetryAlertJobPayloadSchema = z.object({
   version: z.literal(1),
   destination: z.object({
@@ -10,19 +22,25 @@ export const telemetryAlertJobPayloadSchema = z.object({
     projectId: z.string().trim().min(1),
     displayName: z.string().trim().min(1)
   }),
-  crash: z.object({
-    reportId: z.string().trim().min(1),
-    fingerprint: z.string().trim().min(1),
-    throwableType: z.string().trim().min(1)
-  }),
+  crash: crashAlertDetailsSchema.optional(),
+  manualReport: manualReportAlertDetailsSchema.optional(),
   discordMessage: z.object({
     content: z.string().min(1),
     attachmentJson: z.string().min(1).optional(),
     attachmentName: z.string().min(1).optional()
   })
+}).refine((payload) => payload.crash || payload.manualReport, {
+  message: "Expected crash or manual report alert details."
 });
 
 export type TelemetryAlertJobPayload = z.infer<typeof telemetryAlertJobPayloadSchema>;
+export type CrashTelemetryAlertJobPayload = TelemetryAlertJobPayload & {
+  crash: z.infer<typeof crashAlertDetailsSchema>;
+};
+
+export function isCrashAlertPayload(payload: TelemetryAlertJobPayload): payload is CrashTelemetryAlertJobPayload {
+  return Boolean(payload.crash);
+}
 
 export function buildFingerprintThreadName(fingerprint: string, throwableType: string, projectId: string): string {
   const projectToken = safeThreadToken(projectId).slice(0, 24) || "project";
@@ -33,7 +51,7 @@ export function buildFingerprintThreadName(fingerprint: string, throwableType: s
   return truncate(baseName, 100);
 }
 
-export function buildThreadOpenerMessage(payload: TelemetryAlertJobPayload): string {
+export function buildThreadOpenerMessage(payload: CrashTelemetryAlertJobPayload): string {
   return [
     "Crash fingerprint thread created.",
     `project: \`${safeInline(payload.project.displayName)}\``,

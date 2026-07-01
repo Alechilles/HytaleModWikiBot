@@ -6,8 +6,9 @@ import type { WikiBot } from "../discord/bot.js";
 import {
   buildFingerprintThreadName,
   buildThreadOpenerMessage,
+  isCrashAlertPayload,
   telemetryAlertJobPayloadSchema,
-  type TelemetryAlertJobPayload
+  type CrashTelemetryAlertJobPayload
 } from "./alert-job.js";
 
 interface AlertDeliveryWorkerDependencies {
@@ -85,22 +86,27 @@ export class TelemetryAlertDeliveryWorker {
   }): Promise<void> {
     try {
       const payload = telemetryAlertJobPayloadSchema.parse(job.payload);
-      const threadId = await this.resolveOrCreateThread(payload);
-      await this.deps.bot.sendMessageToThread(
-        payload.discordMessage.attachmentJson
-          ? {
-              threadId,
-              content: payload.discordMessage.content,
-              attachmentJson: payload.discordMessage.attachmentJson,
-              ...(payload.discordMessage.attachmentName
-                ? { attachmentName: payload.discordMessage.attachmentName }
-                : {})
-            }
-          : {
-              threadId,
-              content: payload.discordMessage.content
-            }
-      );
+      const message = payload.discordMessage.attachmentJson
+        ? {
+            content: payload.discordMessage.content,
+            attachmentJson: payload.discordMessage.attachmentJson,
+            ...(payload.discordMessage.attachmentName
+              ? { attachmentName: payload.discordMessage.attachmentName }
+              : {})
+          }
+        : {
+            content: payload.discordMessage.content
+          };
+
+      if (isCrashAlertPayload(payload)) {
+        const threadId = await this.resolveOrCreateThread(payload);
+        await this.deps.bot.sendMessageToThread({ threadId, ...message });
+      } else {
+        await this.deps.bot.sendMessageToChannel({
+          channelId: payload.destination.channelId,
+          ...message
+        });
+      }
       await this.deps.alertJobRepo.markDelivered(job.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -115,7 +121,7 @@ export class TelemetryAlertDeliveryWorker {
     }
   }
 
-  private async resolveOrCreateThread(payload: TelemetryAlertJobPayload): Promise<string> {
+  private async resolveOrCreateThread(payload: CrashTelemetryAlertJobPayload): Promise<string> {
     const mappedThreadId = await this.deps.crashThreadRepo.getThreadId(
       payload.destination.channelId,
       payload.project.projectId,

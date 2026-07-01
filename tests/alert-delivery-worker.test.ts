@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildFingerprintThreadName,
   buildThreadOpenerMessage,
+  isCrashAlertPayload,
   telemetryAlertJobPayloadSchema
 } from "../src/telemetry/alert-job.js";
 
@@ -17,6 +18,31 @@ describe("telemetry alert delivery helpers", () => {
 
     expect(payload.project.projectId).toBe("alecs-tamework");
     expect(payload.discordMessage.attachmentName).toBe("report.json");
+    expect(isCrashAlertPayload(payload)).toBe(true);
+  });
+
+  it("validates manual report alert job payloads", () => {
+    const payload = telemetryAlertJobPayloadSchema.parse({
+      version: 1,
+      destination: { channelId: "123", mentionRoleId: null },
+      project: { projectId: "alecs-tamework", displayName: "Alec's Tamework!" },
+      manualReport: { reportId: "manual-1", reportKind: "suggestion", title: "Add a config toggle" },
+      discordMessage: { content: "Manual report received.", attachmentJson: "{}", attachmentName: "report.json" }
+    });
+
+    expect(payload.manualReport?.reportKind).toBe("suggestion");
+    expect(isCrashAlertPayload(payload)).toBe(false);
+  });
+
+  it("rejects alert job payloads without alert details", () => {
+    expect(() =>
+      telemetryAlertJobPayloadSchema.parse({
+        version: 1,
+        destination: { channelId: "123" },
+        project: { projectId: "alecs-tamework", displayName: "Alec's Tamework!" },
+        discordMessage: { content: "Alert received." }
+      })
+    ).toThrow("Expected crash or manual report alert details.");
   });
 
   it("builds bounded fingerprint thread names", () => {
@@ -32,15 +58,18 @@ describe("telemetry alert delivery helpers", () => {
   });
 
   it("builds thread opener content from a job payload", () => {
-    const content = buildThreadOpenerMessage(
-      telemetryAlertJobPayloadSchema.parse({
-        version: 1,
-        destination: { channelId: "123" },
-        project: { projectId: "alecs-tamework", displayName: "Alec's Tamework!" },
-        crash: { reportId: "rep-1", fingerprint: "deadbeef", throwableType: "java.lang.IllegalStateException" },
-        discordMessage: { content: "Crash report received." }
-      })
-    );
+    const payload = telemetryAlertJobPayloadSchema.parse({
+      version: 1,
+      destination: { channelId: "123" },
+      project: { projectId: "alecs-tamework", displayName: "Alec's Tamework!" },
+      crash: { reportId: "rep-1", fingerprint: "deadbeef", throwableType: "java.lang.IllegalStateException" },
+      discordMessage: { content: "Crash report received." }
+    });
+    if (!isCrashAlertPayload(payload)) {
+      throw new Error("Expected crash alert payload.");
+    }
+
+    const content = buildThreadOpenerMessage(payload);
 
     expect(content).toContain("Crash fingerprint thread created.");
     expect(content).toContain("`deadbeef`");
