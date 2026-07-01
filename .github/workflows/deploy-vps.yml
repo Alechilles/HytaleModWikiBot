@@ -42,8 +42,21 @@ jobs:
             ./ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/srv/apps/discord-bot/"
 
       - name: Deploy On VPS
+        env:
+          PROD_DISCORD_BOT_ID: ${{ secrets.PROD_DISCORD_BOT_ID }}
+          PROD_DISCORD_BOT_KEY: ${{ secrets.PROD_DISCORD_BOT_KEY }}
         run: |
-          ssh "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" <<'EOF'
+          for required in PROD_DISCORD_BOT_ID PROD_DISCORD_BOT_KEY; do
+            if [ -z "${!required}" ]; then
+              echo "ERROR: $required secret is missing"
+              exit 1
+            fi
+          done
+
+          prod_discord_bot_id_b64="$(printf '%s' "$PROD_DISCORD_BOT_ID" | base64 -w0)"
+          prod_discord_bot_key_b64="$(printf '%s' "$PROD_DISCORD_BOT_KEY" | base64 -w0)"
+
+          ssh "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "PROD_DISCORD_BOT_ID_B64='$prod_discord_bot_id_b64' PROD_DISCORD_BOT_KEY_B64='$prod_discord_bot_key_b64' bash -s" <<'EOF'
           set -euo pipefail
           cd /srv/apps/discord-bot
 
@@ -51,6 +64,43 @@ jobs:
             echo "ERROR: /srv/apps/discord-bot/.env is missing on VPS"
             exit 1
           fi
+
+          alert_database_url="$(grep -m1 '^DATABASE_URL=' /srv/apps/alecs-telemetry-platform/.env | cut -d= -f2-)"
+          if [ -z "$alert_database_url" ]; then
+            echo "ERROR: platform DATABASE_URL is missing on VPS"
+            exit 1
+          fi
+
+          export DISCORD_APPLICATION_ID_VALUE="$(printf '%s' "$PROD_DISCORD_BOT_ID_B64" | base64 -d)"
+          export DISCORD_TOKEN_VALUE="$(printf '%s' "$PROD_DISCORD_BOT_KEY_B64" | base64 -d)"
+          export TELEMETRY_ALERT_DATABASE_URL_VALUE="$alert_database_url"
+          export TELEMETRY_ALERT_DELIVERY_ENABLED_VALUE="true"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(".env")
+          updates = {
+              "DISCORD_APPLICATION_ID": os.environ["DISCORD_APPLICATION_ID_VALUE"],
+              "DISCORD_TOKEN": os.environ["DISCORD_TOKEN_VALUE"],
+              "TELEMETRY_ALERT_DATABASE_URL": os.environ["TELEMETRY_ALERT_DATABASE_URL_VALUE"],
+              "TELEMETRY_ALERT_DELIVERY_ENABLED": os.environ["TELEMETRY_ALERT_DELIVERY_ENABLED_VALUE"],
+          }
+          lines = path.read_text().splitlines()
+          seen = set()
+          next_lines = []
+          for line in lines:
+              key, separator, _value = line.partition("=")
+              if separator and key in updates:
+                  next_lines.append(f"{key}={updates[key]}")
+                  seen.add(key)
+              else:
+                  next_lines.append(line)
+          for key, value in updates.items():
+              if key not in seen:
+                  next_lines.append(f"{key}={value}")
+          path.write_text("\n".join(next_lines) + "\n")
+          PY
 
           docker compose up -d --build
           docker compose exec -T bot node dist/scripts/register-commands.js --scope global
